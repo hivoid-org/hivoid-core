@@ -186,7 +186,8 @@ func (f *Forwarder) forward(
 	}
 	userPolicy, hasUserPolicy := rt.users[userUUID]
 	limit := rt.maxConnections
-	if hasUserPolicy && userPolicy.MaxConnections >= 0 {
+
+	if hasUserPolicy && userPolicy.MaxConnections > 0 {
 		limit = userPolicy.MaxConnections
 	}
 	if rt.connectionTracking || limit > 0 {

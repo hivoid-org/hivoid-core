@@ -197,69 +197,40 @@ func (c *ServerConfig) ValidateServer() error {
 	return nil
 }
 
-type serverConfigRaw struct {
-	Server       json.RawMessage    `json:"server"`
-	Port         int                `json:"port"`
-	Obfs         string             `json:"obfs"`
-	Cert         string             `json:"cert"`
-	Key          string             `json:"key"`
-	Mode         string             `json:"mode"`
-	MaxConns     int                `json:"max_conns"`
-	AllowedHosts []string           `json:"allowed_hosts"`
-	BlockedHosts []string           `json:"blocked_hosts"`
-	AllowedUUIDs []string           `json:"allowed_uuids"`
-	Debug        bool               `json:"debug"`
-	Security     SecuritySection    `json:"security"`
-	Features     FeaturesSection    `json:"features"`
-	Users        []ServerUserConfig `json:"users"`
-}
-
-// LoadServerJSON reads a server JSON config from disk.
-func LoadServerJSON(path string) (*ServerConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+// UnmarshalJSON implements custom logic to handle both Flat (string) and Structured (object) schemas.
+func (c *ServerConfig) UnmarshalJSON(data []byte) error {
+	type alias ServerConfig
+	var aux struct {
+		*alias
+		ServerRaw json.RawMessage `json:"server"`
+		Security  SecuritySection `json:"security"`
+		Features  FeaturesSection `json:"features"`
+	}
+	aux.alias = (*alias)(c)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
 	}
 
-	var raw serverConfigRaw
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-
-	c := &ServerConfig{
-		Port:         raw.Port,
-		Obfs:         raw.Obfs,
-		Cert:         raw.Cert,
-		Key:          raw.Key,
-		Mode:         raw.Mode,
-		MaxConns:     raw.MaxConns,
-		AllowedHosts: raw.AllowedHosts,
-		BlockedHosts: raw.BlockedHosts,
-		AllowedUUIDs: raw.AllowedUUIDs,
-		Debug:              raw.Debug,
-		Users:              raw.Users,
-		HotReload:          raw.Features.HotReload,
-		ConnectionTracking: raw.Features.ConnectionTracking,
-		DisconnectExpired:  raw.Features.DisconnectExpired,
-	}
-
-	if len(raw.Server) > 0 {
+	// 1. Handle "server" field (string or object)
+	if len(aux.ServerRaw) > 0 {
 		var host string
-		if err := json.Unmarshal(raw.Server, &host); err == nil {
+		// Try string first (Legacy/Flat)
+		if err := json.Unmarshal(aux.ServerRaw, &host); err == nil {
 			c.Server = host
 		} else {
+			// Try object (Structured Core 1.1)
 			var section ServerSection
-			if err := json.Unmarshal(raw.Server, &section); err != nil {
-				return nil, fmt.Errorf("parse server section: %w", err)
+			if err := json.Unmarshal(aux.ServerRaw, &section); err != nil {
+				return fmt.Errorf("invalid server section: %w", err)
 			}
 			if section.Listen != "" {
 				h, p, err := splitHostPort(section.Listen)
 				if err != nil {
-					return nil, fmt.Errorf("server.listen: %w", err)
+					return fmt.Errorf("server.listen: %w", err)
 				}
 				port, err := parsePort(p)
 				if err != nil {
-					return nil, fmt.Errorf("server.listen: %w", err)
+					return fmt.Errorf("server.listen: %w", err)
 				}
 				c.Server = h
 				c.Port = port
@@ -270,11 +241,33 @@ func LoadServerJSON(path string) (*ServerConfig, error) {
 			c.LogLevel = section.LogLevel
 		}
 	}
-	if raw.Security.CertFile != "" {
-		c.Cert = raw.Security.CertFile
+
+	// 2. Handle "security" section
+	if aux.Security.CertFile != "" {
+		c.Cert = aux.Security.CertFile
 	}
-	if raw.Security.KeyFile != "" {
-		c.Key = raw.Security.KeyFile
+	if aux.Security.KeyFile != "" {
+		c.Key = aux.Security.KeyFile
+	}
+
+	// 3. Handle "features" section
+	c.HotReload = aux.Features.HotReload
+	c.ConnectionTracking = aux.Features.ConnectionTracking
+	c.DisconnectExpired = aux.Features.DisconnectExpired
+
+	return nil
+}
+
+// LoadServerJSON reads a server JSON config from disk.
+func LoadServerJSON(path string) (*ServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	c := &ServerConfig{}
+	if err := json.Unmarshal(data, c); err != nil {
+		return nil, fmt.Errorf("decode config %q: %w", path, err)
 	}
 
 	c.serverDefaults()
