@@ -14,6 +14,20 @@ import (
 	"go.uber.org/zap"
 )
 
+// UserPolicy defines runtime settings for a specific user UUID.
+type UserPolicy struct {
+	UUID           [16]byte
+	Email          string
+	Mode           intelligence.Mode
+	ObfsConfig     obfuscation.Config
+	MaxConnections int
+	BandwidthLimit int64
+	ExpireAtUnix   int64
+	BytesIn        uint64
+	BytesOut       uint64
+	Enabled        bool
+}
+
 // Manager manages a pool of active HiVoid sessions.
 type Manager struct {
 	mu       sync.RWMutex
@@ -29,6 +43,8 @@ type Manager struct {
 	uuid [16]byte
 	// allowedUUIDs is the server-side allowlist (empty = allow all).
 	allowedUUIDs [][16]byte
+	// userPolicies are applied after handshake based on client UUID.
+	userPolicies map[[16]byte]UserPolicy
 }
 
 // NewManager creates a Manager.
@@ -45,11 +61,15 @@ func NewManager(isClient bool, mode intelligence.Mode, logger *zap.Logger) *Mana
 // AcceptAndHandshake wraps a newly accepted QUIC connection into a Session,
 // performs the server-side handshake, and registers it.
 func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) (*Session, error) {
+	m.mu.RLock()
 	cfg := DefaultConfig(m.isClient)
 	cfg.Engine = intelligence.NewEngine(m.mode)
 	cfg.ObfsConfig = m.obfsCfg
-	m.mu.RLock()
 	cfg.AllowedUUIDs = m.allowedUUIDs
+	policies := make(map[[16]byte]UserPolicy, len(m.userPolicies))
+	for k, v := range m.userPolicies {
+		policies[k] = v
+	}
 	m.mu.RUnlock()
 
 	s, err := New(conn, cfg)
@@ -60,6 +80,9 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 	if err := s.PerformHandshakeAsServer(); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("server handshake: %w", err)
+	}
+	if p, ok := policies[s.ClientUUID()]; ok && p.Enabled {
+		s.ApplyRuntime(p.Mode, p.ObfsConfig)
 	}
 
 	m.register(s)
@@ -156,6 +179,13 @@ func (m *Manager) SetObfuscation(cfg obfuscation.Config) {
 	m.obfsCfg = cfg
 }
 
+// SetMode updates the default runtime mode for future sessions.
+func (m *Manager) SetMode(mode intelligence.Mode) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mode = mode
+}
+
 // SetClientUUID sets the UUID that will be sent in ClientHello for outbound
 // (client-side) connections. Must be called before Connect/Dial.
 func (m *Manager) SetClientUUID(u [16]byte) {
@@ -171,6 +201,77 @@ func (m *Manager) SetAllowedUUIDs(uuids [][16]byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.allowedUUIDs = uuids
+}
+
+// SetUserPolicies atomically replaces user policies.
+func (m *Manager) SetUserPolicies(policies map[[16]byte]UserPolicy) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make(map[[16]byte]UserPolicy, len(policies))
+	for k, v := range policies {
+		cp[k] = v
+	}
+	m.userPolicies = cp
+}
+
+// RefreshActiveSessionPolicies reapplies user policy mode/obfs to active sessions.
+func (m *Manager) RefreshActiveSessionPolicies() {
+	m.mu.RLock()
+	policies := make(map[[16]byte]UserPolicy, len(m.userPolicies))
+	for k, v := range m.userPolicies {
+		policies[k] = v
+	}
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	defaultMode := m.mode
+	defaultObfs := m.obfsCfg
+	m.mu.RUnlock()
+
+	for _, s := range sessions {
+		if p, ok := policies[s.ClientUUID()]; ok && p.Enabled {
+			s.ApplyRuntime(p.Mode, p.ObfsConfig)
+			continue
+		}
+		s.ApplyRuntime(defaultMode, defaultObfs)
+	}
+}
+
+// ObfsConfigForName maps a config string to concrete obfuscation parameters.
+func ObfsConfigForName(name string) obfuscation.Config {
+	cfg := obfuscation.DefaultConfig()
+	switch toLowerASCII(name) {
+	case "", "none":
+		cfg.Enabled = false
+	case "random":
+		cfg.Enabled = true
+	case "http":
+		cfg.Enabled = true
+		cfg.PaddingPct = 0.5
+		cfg.MaxPaddingBytes = 384
+		cfg.MaxJitterMs = 10
+		cfg.BurstBytesMax = 48 * 1024
+	case "tls":
+		cfg.Enabled = true
+		cfg.PaddingPct = 0.7
+		cfg.MaxPaddingBytes = 512
+		cfg.MaxJitterMs = 15
+		cfg.BurstBytesMax = 40 * 1024
+	default:
+		cfg.Enabled = false
+	}
+	return cfg
+}
+
+func toLowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 func (m *Manager) register(s *Session) {

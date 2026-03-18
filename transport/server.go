@@ -5,8 +5,11 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/session"
@@ -19,8 +22,45 @@ import (
 // the session is closed.
 type SessionHandler func(s *session.Session)
 
+type certReloader struct {
+	cert atomic.Value // tls.Certificate
+}
+
+func newCertReloader(certFile, keyFile string) (*certReloader, error) {
+	r := &certReloader{}
+	if err := r.Reload(certFile, keyFile); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *certReloader) Reload(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	r.cert.Store(cert)
+	return nil
+}
+
+func (r *certReloader) TLSConfig() *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"hivoid/1"},
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			v := r.cert.Load()
+			if v == nil {
+				return nil, fmt.Errorf("no certificate loaded")
+			}
+			c := v.(tls.Certificate)
+			return &c, nil
+		},
+	}
+}
+
 // Server is the HiVoid QUIC server.
 type Server struct {
+	mu         sync.RWMutex
 	listenAddr string
 	certFile   string
 	keyFile    string
@@ -28,7 +68,15 @@ type Server struct {
 	logger     *zap.Logger
 	manager    *session.Manager
 	handler    SessionHandler
-	listener   *quic.Listener
+
+	tlsReloader *certReloader
+	tlsCfg      *tls.Config
+	listeners   map[string]*quic.Listener
+
+	serveMu   sync.Mutex
+	serveCtx  context.Context
+	serving   bool
+	acceptWg  sync.WaitGroup
 }
 
 // ServerConfig holds server startup options.
@@ -68,65 +116,123 @@ func NewServer(cfg ServerConfig) *Server {
 		logger:     logger,
 		manager:    mgr,
 		handler:    cfg.Handler,
+		listeners:  make(map[string]*quic.Listener),
 	}
 }
 
-// Listen binds the UDP port and starts the QUIC listener.
-// Call Serve() after this to begin accepting connections.
-func (srv *Server) Listen() error {
-	tlsCfg, err := ServerTLSConfig(srv.certFile, srv.keyFile)
+func (srv *Server) createListener(addr string) (*quic.Listener, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		return fmt.Errorf("load TLS config: %w", err)
-	}
-
-	udpAddr, err := net.ResolveUDPAddr("udp", srv.listenAddr)
-	if err != nil {
-		return fmt.Errorf("resolve listen addr: %w", err)
+		return nil, fmt.Errorf("resolve listen addr: %w", err)
 	}
 
 	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		return fmt.Errorf("listen udp: %w", err)
+		return nil, fmt.Errorf("listen udp: %w", err)
 	}
-
-	// Increase OS UDP buffers for high-throughput QUIC
 	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
 	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
 
-	transport := &quic.Transport{
-		Conn: udpConn,
-	}
-
-	listener, err := transport.Listen(tlsCfg, QUICConfig())
+	transport := &quic.Transport{Conn: udpConn}
+	listener, err := transport.Listen(srv.tlsCfg, QUICConfig())
 	if err != nil {
-		return fmt.Errorf("quic listen: %w", err)
+		return nil, fmt.Errorf("quic listen: %w", err)
+	}
+	return listener, nil
+}
+
+func (srv *Server) startAcceptLoop(addr string, listener *quic.Listener) {
+	srv.acceptWg.Add(1)
+	go func() {
+		defer srv.acceptWg.Done()
+		for {
+			srv.serveMu.Lock()
+			ctx := srv.serveCtx
+			srv.serveMu.Unlock()
+			if ctx == nil {
+				return
+			}
+			conn, err := listener.Accept(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				// Listener closed during reload.
+				srv.mu.RLock()
+				_, stillActive := srv.listeners[addr]
+				srv.mu.RUnlock()
+				if !stillActive {
+					return
+				}
+				srv.logger.Warn("accept error", zap.String("addr", addr), zap.Error(err))
+				continue
+			}
+			go srv.handleConn(ctx, conn)
+		}
+	}()
+}
+
+// Listen binds the UDP port and starts the initial QUIC listener.
+func (srv *Server) Listen() error {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+
+	if srv.tlsReloader == nil {
+		reloader, err := newCertReloader(srv.certFile, srv.keyFile)
+		if err != nil {
+			return fmt.Errorf("load TLS config: %w", err)
+		}
+		srv.tlsReloader = reloader
+		srv.tlsCfg = reloader.TLSConfig()
+	}
+	if _, exists := srv.listeners[srv.listenAddr]; exists {
+		return nil
 	}
 
-	srv.listener = listener
+	listener, err := srv.createListener(srv.listenAddr)
+	if err != nil {
+		return err
+	}
+	srv.listeners[srv.listenAddr] = listener
 	srv.logger.Info("listening", zap.String("addr", srv.listenAddr))
 	return nil
 }
 
 // Serve begins accepting QUIC connections. It blocks until ctx is cancelled.
-// Each accepted connection is handed off to a goroutine for handshaking and
-// then to the configured SessionHandler.
 func (srv *Server) Serve(ctx context.Context) error {
-	if srv.listener == nil {
+	srv.mu.RLock()
+	if len(srv.listeners) == 0 {
+		srv.mu.RUnlock()
 		return fmt.Errorf("call Listen() before Serve()")
 	}
-
-	for {
-		conn, err := srv.listener.Accept(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil // graceful shutdown
-			}
-			srv.logger.Error("accept error", zap.Error(err))
-			return err
-		}
-
-		go srv.handleConn(ctx, conn)
+	pairs := make([]struct {
+		addr string
+		l    *quic.Listener
+	}, 0, len(srv.listeners))
+	for addr, l := range srv.listeners {
+		pairs = append(pairs, struct {
+			addr string
+			l    *quic.Listener
+		}{addr: addr, l: l})
 	}
+	srv.mu.RUnlock()
+
+	srv.serveMu.Lock()
+	srv.serveCtx = ctx
+	srv.serving = true
+	srv.serveMu.Unlock()
+
+	for _, p := range pairs {
+		srv.startAcceptLoop(p.addr, p.l)
+	}
+
+	<-ctx.Done()
+	srv.serveMu.Lock()
+	srv.serving = false
+	srv.serveCtx = nil
+	srv.serveMu.Unlock()
+	srv.acceptWg.Wait()
+	return nil
 }
 
 // ListenAndServe is a convenience helper that calls Listen then Serve.
@@ -137,17 +243,81 @@ func (srv *Server) ListenAndServe(ctx context.Context) error {
 	return srv.Serve(ctx)
 }
 
+// ReloadConfig applies listener/certificate updates live.
+// This enables full server-side hot reload without process restart.
+func (srv *Server) ReloadConfig(cfg ServerConfig) error {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+
+	if srv.tlsReloader == nil {
+		reloader, err := newCertReloader(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return fmt.Errorf("load TLS config: %w", err)
+		}
+		srv.tlsReloader = reloader
+		srv.tlsCfg = reloader.TLSConfig()
+	} else if cfg.CertFile != srv.certFile || cfg.KeyFile != srv.keyFile {
+		if err := srv.tlsReloader.Reload(cfg.CertFile, cfg.KeyFile); err != nil {
+			return fmt.Errorf("reload TLS cert/key: %w", err)
+		}
+	}
+
+	if cfg.ListenAddr == "" {
+		return fmt.Errorf("listen address is empty")
+	}
+
+	// Ensure new listener exists and starts first.
+	if _, exists := srv.listeners[cfg.ListenAddr]; !exists {
+		l, err := srv.createListener(cfg.ListenAddr)
+		if err != nil {
+			return err
+		}
+		srv.listeners[cfg.ListenAddr] = l
+		srv.logger.Info("listener added", zap.String("addr", cfg.ListenAddr))
+
+		srv.serveMu.Lock()
+		serving := srv.serving
+		srv.serveMu.Unlock()
+		if serving {
+			srv.startAcceptLoop(cfg.ListenAddr, l)
+		}
+	}
+
+	// Remove old listeners only after new endpoint is active.
+	for addr, l := range srv.listeners {
+		if addr == cfg.ListenAddr {
+			continue
+		}
+		delete(srv.listeners, addr)
+		_ = l.Close()
+		srv.logger.Info("listener removed", zap.String("addr", addr))
+	}
+
+	srv.listenAddr = cfg.ListenAddr
+	srv.certFile = cfg.CertFile
+	srv.keyFile = cfg.KeyFile
+	return nil
+}
+
 // Manager returns the session manager.
 func (srv *Server) Manager() *session.Manager {
 	return srv.manager
 }
 
-// Close shuts down the listener and all sessions.
+// Close shuts down listeners and all sessions.
 func (srv *Server) Close() error {
-	srv.manager.CloseAll()
-	if srv.listener != nil {
-		return srv.listener.Close()
+	srv.mu.Lock()
+	listeners := make([]*quic.Listener, 0, len(srv.listeners))
+	for _, l := range srv.listeners {
+		listeners = append(listeners, l)
 	}
+	srv.listeners = make(map[string]*quic.Listener)
+	srv.mu.Unlock()
+
+	for _, l := range listeners {
+		_ = l.Close()
+	}
+	srv.manager.CloseAll()
 	return nil
 }
 
@@ -171,13 +341,11 @@ func (srv *Server) handleConn(ctx context.Context, conn quic.Connection) {
 	if srv.handler != nil {
 		srv.handler(sess)
 	} else {
-		// Default echo handler for testing
 		srv.echoHandler(ctx, sess)
 	}
 }
 
 // echoHandler is the default server-side session handler.
-// It reads data from the session and echoes it back — useful for testing.
 func (srv *Server) echoHandler(ctx context.Context, sess *session.Session) {
 	for {
 		data, err := sess.RecvStream(ctx)

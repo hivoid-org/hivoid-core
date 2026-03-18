@@ -5,42 +5,65 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
+
+// ServerSection is the nested "server" section.
+type ServerSection struct {
+	Listen   string `json:"listen"`
+	Mode     string `json:"mode"`
+	LogLevel string `json:"log_level"`
+}
+
+// SecuritySection is the nested "security" section.
+type SecuritySection struct {
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
+}
+
+// FeaturesSection is the nested "features" section.
+type FeaturesSection struct {
+	HotReload          bool `json:"hot_reload"`
+	ConnectionTracking bool `json:"connection_tracking"`
+	DisconnectExpired  bool `json:"disconnect_expired"`
+}
+
+// ServerUserConfig contains per-user runtime policy.
+type ServerUserConfig struct {
+	UUID           string `json:"uuid"`
+	Email          string `json:"email"`
+	Enabled        bool   `json:"enabled"`
+	MaxConnections int    `json:"max_connections"`
+	Mode           string `json:"mode"`
+	Obfs           string `json:"obfs"`
+	BandwidthLimit int64  `json:"bandwidth_limit"`
+	ExpireAt       string `json:"expire_at"`
+	BytesIn        uint64 `json:"bytes_in"`
+	BytesOut       uint64 `json:"bytes_out"`
+}
 
 // ServerConfig holds every configurable parameter for a HiVoid server.
 type ServerConfig struct {
-	// Server is the hostname or IP to bind (used with Port to form listen address).
+	// Flat schema (legacy and internal normalized form).
 	Server string `json:"server"`
+	Port   int    `json:"port"`
+	Obfs   string `json:"obfs"`
+	Cert   string `json:"cert"`
+	Key    string `json:"key"`
+	Mode   string `json:"mode"`
 
-	// Port is the UDP port (QUIC) to listen on.
-	Port int `json:"port"`
-
-	// Obfs controls traffic obfuscation (none, random).
-	Obfs string `json:"obfs"`
-
-	// Cert is the path to the TLS certificate (PEM).
-	Cert string `json:"cert"`
-
-	// Key is the path to the TLS private key (PEM).
-	Key string `json:"key"`
-
-	// Mode controls the intelligence engine (performance|stealth|balanced|adaptive).
-	Mode string `json:"mode"`
-
-	// MaxConns is the maximum number of concurrent proxy connections (0 = unlimited).
-	MaxConns int `json:"max_conns"`
-
-	// AllowedHosts is a list of allowed destination host patterns (empty = all).
+	MaxConns     int      `json:"max_conns"`
 	AllowedHosts []string `json:"allowed_hosts"`
-
-	// BlockedHosts is a list of blocked destination host patterns.
 	BlockedHosts []string `json:"blocked_hosts"`
-
-	// AllowedUUIDs is the list of client UUIDs allowed to connect (empty = all).
 	AllowedUUIDs []string `json:"allowed_uuids"`
+	Debug        bool     `json:"debug"`
 
-	// Debug enables debug-level logging.
-	Debug bool `json:"debug"`
+	// Dynamic features and user policies.
+	HotReload          bool               `json:"-"`
+	ConnectionTracking bool               `json:"-"`
+	DisconnectExpired  bool               `json:"-"`
+	LogLevel           string             `json:"-"`
+	Users              []ServerUserConfig `json:"users"`
 }
 
 // Listen returns "host:port" for the QUIC listener.
@@ -51,6 +74,24 @@ func (c *ServerConfig) Listen() string {
 		port = 4433
 	}
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+func parsePort(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("port is empty")
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("invalid port %q", s)
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("port must be 1-65535, got %d", n)
+	}
+	return n, nil
 }
 
 // serverDefaults fills in zero-value fields with their defaults.
@@ -69,6 +110,26 @@ func (c *ServerConfig) serverDefaults() {
 	}
 	if c.Obfs == "" {
 		c.Obfs = DefaultObfs
+	}
+	for i := range c.Users {
+		if c.Users[i].Mode == "" {
+			c.Users[i].Mode = c.Mode
+		}
+		if c.Users[i].Obfs == "" {
+			c.Users[i].Obfs = c.Obfs
+		}
+	}
+}
+
+func (c *ServerConfig) normalize() {
+	if len(c.Users) > 0 && len(c.AllowedUUIDs) == 0 {
+		allow := make([]string, 0, len(c.Users))
+		for _, u := range c.Users {
+			if u.Enabled {
+				allow = append(allow, u.UUID)
+			}
+		}
+		c.AllowedUUIDs = allow
 	}
 }
 
@@ -100,10 +161,57 @@ func (c *ServerConfig) ValidateServer() error {
 		}
 	}
 
+	seenUsers := make(map[string]struct{}, len(c.Users))
+	for i, u := range c.Users {
+		row := i + 1
+		if err := validateUUID(u.UUID); err != nil {
+			errs = append(errs, fmt.Sprintf("users[%d].uuid: %v", row, err))
+		}
+		id := strings.ToLower(u.UUID)
+		if _, exists := seenUsers[id]; exists {
+			errs = append(errs, fmt.Sprintf("users[%d].uuid: duplicate %q", row, u.UUID))
+		}
+		seenUsers[id] = struct{}{}
+		if u.MaxConnections < 0 {
+			errs = append(errs, fmt.Sprintf("users[%d].max_connections: must be >= 0, got %d", row, u.MaxConnections))
+		}
+		if u.BandwidthLimit < 0 {
+			errs = append(errs, fmt.Sprintf("users[%d].bandwidth_limit: must be >= 0, got %d", row, u.BandwidthLimit))
+		}
+		if u.Mode != "" && !validModes[strings.ToLower(u.Mode)] {
+			errs = append(errs, fmt.Sprintf("users[%d].mode: unknown value %q", row, u.Mode))
+		}
+		if u.Obfs != "" && !validObfs[strings.ToLower(u.Obfs)] {
+			errs = append(errs, fmt.Sprintf("users[%d].obfs: unknown value %q", row, u.Obfs))
+		}
+		if u.ExpireAt != "" {
+			if _, err := time.Parse(time.RFC3339, u.ExpireAt); err != nil {
+				errs = append(errs, fmt.Sprintf("users[%d].expire_at: invalid RFC3339 timestamp %q", row, u.ExpireAt))
+			}
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("server config validation failed:\n  • %s", strings.Join(errs, "\n  • "))
 	}
 	return nil
+}
+
+type serverConfigRaw struct {
+	Server       json.RawMessage    `json:"server"`
+	Port         int                `json:"port"`
+	Obfs         string             `json:"obfs"`
+	Cert         string             `json:"cert"`
+	Key          string             `json:"key"`
+	Mode         string             `json:"mode"`
+	MaxConns     int                `json:"max_conns"`
+	AllowedHosts []string           `json:"allowed_hosts"`
+	BlockedHosts []string           `json:"blocked_hosts"`
+	AllowedUUIDs []string           `json:"allowed_uuids"`
+	Debug        bool               `json:"debug"`
+	Security     SecuritySection    `json:"security"`
+	Features     FeaturesSection    `json:"features"`
+	Users        []ServerUserConfig `json:"users"`
 }
 
 // LoadServerJSON reads a server JSON config from disk.
@@ -112,15 +220,69 @@ func LoadServerJSON(path string) (*ServerConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	var c ServerConfig
-	if err := json.Unmarshal(data, &c); err != nil {
+
+	var raw serverConfigRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	c := &ServerConfig{
+		Port:         raw.Port,
+		Obfs:         raw.Obfs,
+		Cert:         raw.Cert,
+		Key:          raw.Key,
+		Mode:         raw.Mode,
+		MaxConns:     raw.MaxConns,
+		AllowedHosts: raw.AllowedHosts,
+		BlockedHosts: raw.BlockedHosts,
+		AllowedUUIDs: raw.AllowedUUIDs,
+		Debug:              raw.Debug,
+		Users:              raw.Users,
+		HotReload:          raw.Features.HotReload,
+		ConnectionTracking: raw.Features.ConnectionTracking,
+		DisconnectExpired:  raw.Features.DisconnectExpired,
+	}
+
+	if len(raw.Server) > 0 {
+		var host string
+		if err := json.Unmarshal(raw.Server, &host); err == nil {
+			c.Server = host
+		} else {
+			var section ServerSection
+			if err := json.Unmarshal(raw.Server, &section); err != nil {
+				return nil, fmt.Errorf("parse server section: %w", err)
+			}
+			if section.Listen != "" {
+				h, p, err := splitHostPort(section.Listen)
+				if err != nil {
+					return nil, fmt.Errorf("server.listen: %w", err)
+				}
+				port, err := parsePort(p)
+				if err != nil {
+					return nil, fmt.Errorf("server.listen: %w", err)
+				}
+				c.Server = h
+				c.Port = port
+			}
+			if section.Mode != "" {
+				c.Mode = section.Mode
+			}
+			c.LogLevel = section.LogLevel
+		}
+	}
+	if raw.Security.CertFile != "" {
+		c.Cert = raw.Security.CertFile
+	}
+	if raw.Security.KeyFile != "" {
+		c.Key = raw.Security.KeyFile
+	}
+
 	c.serverDefaults()
+	c.normalize()
 	if err := c.ValidateServer(); err != nil {
 		return nil, err
 	}
-	return &c, nil
+	return c, nil
 }
 
 // UUIDBytesList parses all AllowedUUIDs into [16]byte values.

@@ -39,16 +39,46 @@ func (m Mode) String() string {
 
 // ModeFromString parses a mode name string.
 func ModeFromString(s string) Mode {
-	switch s {
+	switch toLowerASCII(s) {
 	case "performance":
+		return ModePerformance
+	case "high_performance":
 		return ModePerformance
 	case "stealth":
 		return ModeStealth
 	case "balanced":
 		return ModeBalanced
+	case "adaptive":
+		return ModeAdaptive
 	default:
 		return ModeAdaptive
 	}
+}
+
+// SetMode updates the configured mode at runtime.
+// It is safe for concurrent use.
+func (e *Engine) SetMode(mode Mode) {
+	e.mu.Lock()
+	e.configMode = mode
+	e.activeMode = mode
+	e.applyMode(mode)
+	tuning := e.tuning
+	obs := append([]func(Mode, TuningParams){}, e.observers...)
+	e.mu.Unlock()
+
+	for _, fn := range obs {
+		fn(mode, tuning)
+	}
+}
+
+func toLowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // TuningParams holds the output parameters from engine decisions.

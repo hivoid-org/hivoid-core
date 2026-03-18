@@ -13,6 +13,8 @@
 dist/
 builds/
 tests/
+panel/
 
 beta*.md
+hivoid-*
 github.py

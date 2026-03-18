@@ -21,6 +21,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hivoid-org/hivoid-core/session"
@@ -45,6 +46,14 @@ type ForwarderConfig struct {
 	BlockedHosts []string
 	// Logger is an optional structured logger.
 	Logger *zap.Logger
+	// Users defines per-user runtime policies.
+	Users map[[16]byte]session.UserPolicy
+	// ConnectionTracking toggles per-user connection counters.
+	ConnectionTracking bool
+	// UserControls tracks usage and bandwidth/expiration state.
+	UserControls *UserControlManager
+	// DisconnectExpired closes active tunnels when the user expires.
+	DisconnectExpired bool
 }
 
 // DefaultForwarderConfig returns sensible defaults.
@@ -66,11 +75,22 @@ var relayBufPool = sync.Pool{
 // Forwarder is a transport.SessionHandler that proxies tunnel connections
 // to their real destinations over TCP.
 type Forwarder struct {
-	cfg    ForwarderConfig
-	logger *zap.Logger
-	sem    chan struct{} // connection limit semaphore
-	dialer net.Dialer
-	wg     sync.WaitGroup
+	logger  *zap.Logger
+	dialer  net.Dialer
+	wg      sync.WaitGroup
+	limiter *ConnectionLimiter
+	users   *UserControlManager
+	runtime atomic.Value // forwarderRuntime
+}
+
+type forwarderRuntime struct {
+	maxConnections     int
+	allowedHosts       []string
+	blockedHosts       []string
+	dialTimeout        time.Duration
+	users              map[[16]byte]session.UserPolicy
+	connectionTracking bool
+	disconnectExpired  bool
 }
 
 // NewForwarder creates a Forwarder with the given configuration.
@@ -79,16 +99,41 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
-	var sem chan struct{}
-	if cfg.MaxConnections > 0 {
-		sem = make(chan struct{}, cfg.MaxConnections)
-	}
-
 	dialer := net.Dialer{
 		Timeout: cfg.DialTimeout,
 	}
+	f := &Forwarder{
+		logger:  logger,
+		dialer:  dialer,
+		limiter: &ConnectionLimiter{},
+		users:   cfg.UserControls,
+	}
+	f.UpdateRuntime(cfg)
+	return f
+}
 
-	return &Forwarder{cfg: cfg, logger: logger, sem: sem, dialer: dialer}
+// UpdateRuntime atomically applies runtime changes for new forwarded connections.
+func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
+	if cfg.UserControls != nil {
+		f.users = cfg.UserControls
+	}
+	users := make(map[[16]byte]session.UserPolicy, len(cfg.Users))
+	for k, v := range cfg.Users {
+		users[k] = v
+	}
+	rt := forwarderRuntime{
+		maxConnections:     cfg.MaxConnections,
+		allowedHosts:       append([]string(nil), cfg.AllowedHosts...),
+		blockedHosts:       append([]string(nil), cfg.BlockedHosts...),
+		dialTimeout:        cfg.DialTimeout,
+		users:              users,
+		connectionTracking: cfg.ConnectionTracking,
+		disconnectExpired:  cfg.DisconnectExpired,
+	}
+	if rt.dialTimeout <= 0 {
+		rt.dialTimeout = 10 * time.Second
+	}
+	f.runtime.Store(rt)
 }
 
 // Handler returns a transport.SessionHandler that forwards proxy tunnels.
@@ -128,23 +173,47 @@ func (f *Forwarder) forward(
 	log *zap.Logger,
 ) {
 	defer f.wg.Done()
-
-	// Connection limit
-	if f.sem != nil {
-		select {
-		case f.sem <- struct{}{}:
-			defer func() { <-f.sem }()
-		default:
-			session.SendProxyErrToStream(stream, "connection limit reached")
+	rt := f.runtime.Load().(forwarderRuntime)
+	userUUID := sess.ClientUUID()
+	if f.users != nil {
+		if err := f.users.AllowNewConnection(userUUID); err != nil {
+			session.SendProxyErrToStream(stream, err.Error())
 			stream.CancelRead(quic.StreamErrorCode(0))
 			stream.Close()
-			log.Warn("connection limit", zap.String("target", target))
+			log.Warn("user policy reject", zap.String("target", target), zap.Error(err))
 			return
 		}
 	}
+	userPolicy, hasUserPolicy := rt.users[userUUID]
+	limit := rt.maxConnections
+	if hasUserPolicy && userPolicy.MaxConnections >= 0 {
+		limit = userPolicy.MaxConnections
+	}
+	if rt.connectionTracking || limit > 0 {
+		active, ok := f.limiter.TryAcquire(userUUID, limit)
+		if !ok {
+			session.SendProxyErrToStream(stream, "connection limit reached")
+			stream.CancelRead(quic.StreamErrorCode(0))
+			stream.Close()
+			log.Warn("connection limit",
+				zap.String("target", target),
+				zap.Int("limit", limit),
+				zap.Int64("active", active),
+			)
+			return
+		}
+		defer func() {
+			remaining := f.limiter.Release(userUUID)
+			log.Debug("connection released", zap.Int64("active", remaining))
+		}()
+		log.Debug("connection accepted",
+			zap.Int("limit", limit),
+			zap.Int64("active", active),
+		)
+	}
 
 	// ACL check
-	if err := f.checkACL(target); err != nil {
+	if err := f.checkACL(rt, target); err != nil {
 		session.SendProxyErrToStream(stream, err.Error())
 		stream.CancelRead(quic.StreamErrorCode(0))
 		stream.Close()
@@ -155,7 +224,7 @@ func (f *Forwarder) forward(
 	log.Debug("forwarding", zap.String("target", target))
 
 	// Phase 2: dial the real TCP destination
-	dialCtx, cancel := context.WithTimeout(ctx, f.cfg.DialTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, rt.dialTimeout)
 	defer cancel()
 
 	remote, err := f.dialer.DialContext(dialCtx, "tcp", target)
@@ -182,7 +251,15 @@ func (f *Forwarder) forward(
 
 	log.Debug("relay started", zap.String("target", target))
 	start := time.Now()
-	n := biRelay(tunnel, remote)
+	n := f.biRelay(tunnel, remote, userUUID, rt.disconnectExpired)
+	if f.users != nil {
+		in, out := f.users.UserUsage(userUUID)
+		log.Debug("user traffic totals",
+			zap.Uint64("bytes_in", in),
+			zap.Uint64("bytes_out", out),
+			zap.Uint64("total_usage", in+out),
+		)
+	}
 	log.Debug("relay done",
 		zap.String("target", target),
 		zap.Int64("bytes", n),
@@ -192,7 +269,7 @@ func (f *Forwarder) forward(
 
 // biRelay copies data between a and b concurrently.
 // Returns the total bytes transferred across both directions.
-func biRelay(a, b net.Conn) int64 {
+func (f *Forwarder) biRelay(a, b net.Conn, userUUID [16]byte, disconnectExpired bool) int64 {
 	var (
 		mu    sync.Mutex
 		total int64
@@ -205,10 +282,11 @@ func biRelay(a, b net.Conn) int64 {
 		mu.Unlock()
 	}
 
-	copyDir := func(dst, src net.Conn) {
+	copyDir := func(dst, src net.Conn, isDownload bool) {
 		defer wg.Done()
 		bufp := relayBufPool.Get().(*[]byte)
-		n, _ := io.CopyBuffer(dst, src, *bufp)
+		buf := *bufp
+		n, _ := f.relayWithControls(dst, src, buf, userUUID, isDownload, disconnectExpired)
 		relayBufPool.Put(bufp)
 		add(n)
 		// Half-close the write side so the peer knows we're done sending.
@@ -221,30 +299,80 @@ func biRelay(a, b net.Conn) int64 {
 	}
 
 	wg.Add(2)
-	go copyDir(a, b)
-	go copyDir(b, a)
+	go copyDir(a, b, true)  // remote -> user tunnel = bytes_in (download)
+	go copyDir(b, a, false) // user tunnel -> remote = bytes_out (upload)
 	wg.Wait()
 
 	return total
 }
 
+func (f *Forwarder) relayWithControls(
+	dst net.Conn,
+	src net.Conn,
+	buf []byte,
+	userUUID [16]byte,
+	isDownload bool,
+	disconnectExpired bool,
+) (int64, error) {
+	var total int64
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			chunk := buf[:nr]
+			if f.users != nil {
+				if disconnectExpired && f.users.IsExpired(userUUID) {
+					return total, fmt.Errorf("user expired")
+				}
+				f.users.Throttle(userUUID, nr)
+			}
+			written := 0
+			for written < nr {
+				nw, ew := dst.Write(chunk[written:])
+				if nw > 0 {
+					written += nw
+					total += int64(nw)
+					if f.users != nil {
+						if isDownload {
+							f.users.AddBytesIn(userUUID, uint64(nw))
+						} else {
+							f.users.AddBytesOut(userUUID, uint64(nw))
+						}
+					}
+				}
+				if ew != nil {
+					return total, ew
+				}
+				if nw == 0 {
+					return total, io.ErrShortWrite
+				}
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return total, nil
+			}
+			return total, er
+		}
+	}
+}
+
 // checkACL returns an error if the target is blocked or not in the allow list.
-func (f *Forwarder) checkACL(target string) error {
+func (f *Forwarder) checkACL(rt forwarderRuntime, target string) error {
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
 		host = target
 	}
 
-	for _, pattern := range f.cfg.BlockedHosts {
+	for _, pattern := range rt.blockedHosts {
 		if matchHost(pattern, host) {
 			return fmt.Errorf("blocked destination: %s", host)
 		}
 	}
 
-	if len(f.cfg.AllowedHosts) == 0 {
+	if len(rt.allowedHosts) == 0 {
 		return nil
 	}
-	for _, pattern := range f.cfg.AllowedHosts {
+	for _, pattern := range rt.allowedHosts {
 		if matchHost(pattern, host) {
 			return nil
 		}

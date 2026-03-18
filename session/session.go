@@ -648,6 +648,19 @@ func (s *Session) ClientUUID() [16]byte {
 	return s.clientUUID
 }
 
+// ApplyRuntime updates runtime tunables for this session without reconnecting.
+// It is safe to call while the session is active.
+func (s *Session) ApplyRuntime(mode intelligence.Mode, obfsCfg obfuscation.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.engine != nil {
+		s.engine.SetMode(mode)
+	}
+	if s.obfs != nil {
+		s.obfs.Update(obfsCfg)
+	}
+}
+
 // SendFrame writes an arbitrary frame to the control stream.
 func (s *Session) SendFrame(f *frames.Frame) error {
 	if s.ctrlStream == nil {

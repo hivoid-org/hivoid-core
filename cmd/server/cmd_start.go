@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 
 	"github.com/hivoid-org/hivoid-core/config"
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/server"
+	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
 	"github.com/hivoid-org/hivoid-core/utils"
 	"go.uber.org/zap"
@@ -63,35 +64,12 @@ func runStart(args []string) {
 	listenAddr := cfg.Listen()
 
 	// Build the forwarder
+	usagePath := *configPath + ".usage.json"
+	userControls := server.NewUserControlManager(logger, usagePath)
 	fwdCfg := server.DefaultForwarderConfig()
 	fwdCfg.Logger = logger
-	fwdCfg.MaxConnections = cfg.MaxConns
-	if len(cfg.AllowedHosts) > 0 {
-		fwdCfg.AllowedHosts = cfg.AllowedHosts
-	}
-	if len(cfg.BlockedHosts) > 0 {
-		fwdCfg.BlockedHosts = cfg.BlockedHosts
-	}
+	fwdCfg.UserControls = userControls
 	forwarder := server.NewForwarder(fwdCfg)
-
-	// Parse allowed UUIDs
-	var allowedUUIDs [][16]byte
-	for _, raw := range cfg.AllowedUUIDs {
-		tmpCfg := &config.Config{UUID: raw, Server: "x", Port: 1}
-		b, err := tmpCfg.UUIDBytes()
-		if err != nil {
-			logger.Warn("skipping malformed uuid", zap.String("uuid", raw), zap.Error(err))
-			continue
-		}
-		allowedUUIDs = append(allowedUUIDs, b)
-	}
-
-	logger.Info("hivoid server starting",
-		zap.String("listen", listenAddr),
-		zap.String("mode", mode.String()),
-		zap.Int("max_conns", cfg.MaxConns),
-		zap.Int("allowed_uuids", len(allowedUUIDs)),
-	)
 
 	srv := transport.NewServer(transport.ServerConfig{
 		ListenAddr:   listenAddr,
@@ -100,9 +78,54 @@ func runStart(args []string) {
 		Mode:         mode,
 		Logger:       logger,
 		Handler:      forwarder.Handler(),
-		AllowedUUIDs: allowedUUIDs,
+		AllowedUUIDs: nil,
 	})
 	defer srv.Close() //nolint:errcheck
+
+	applyRuntime := func(next *config.ServerConfig) error {
+		if err := srv.ReloadConfig(transport.ServerConfig{
+			ListenAddr: next.Listen(),
+			CertFile:   next.Cert,
+			KeyFile:    next.Key,
+		}); err != nil {
+			return err
+		}
+		allowedUUIDs, userPolicies := buildRuntimePolicies(next, logger)
+		srv.Manager().SetMode(intelligence.ModeFromString(next.Mode))
+		srv.Manager().SetObfuscation(session.ObfsConfigForName(next.Obfs))
+		srv.Manager().SetAllowedUUIDs(allowedUUIDs)
+		srv.Manager().SetUserPolicies(userPolicies)
+		srv.Manager().RefreshActiveSessionPolicies()
+		userControls.ApplyPolicies(userPolicies)
+
+		forwarder.UpdateRuntime(server.ForwarderConfig{
+			DialTimeout:         10 * time.Second,
+			MaxConnections:      next.MaxConns,
+			AllowedHosts:        next.AllowedHosts,
+			BlockedHosts:        next.BlockedHosts,
+			Logger:              logger,
+			Users:               userPolicies,
+			ConnectionTracking:  next.ConnectionTracking,
+			UserControls:        userControls,
+			DisconnectExpired:   next.DisconnectExpired,
+		})
+		logger.Info("runtime config applied",
+			zap.String("mode", intelligence.ModeFromString(next.Mode).String()),
+			zap.Int("users", len(userPolicies)),
+			zap.Int("allowed_uuids", len(allowedUUIDs)),
+			zap.Int("max_conns", next.MaxConns),
+		)
+		return nil
+	}
+	if err := applyRuntime(cfg); err != nil {
+		logger.Fatal("apply runtime config failed", zap.Error(err))
+	}
+
+	logger.Info("hivoid server starting",
+		zap.String("listen", listenAddr),
+		zap.String("mode", mode.String()),
+		zap.Int("max_conns", cfg.MaxConns),
+	)
 
 	// Write PID file
 	if err := writePID(); err != nil {
@@ -111,10 +134,27 @@ func runStart(args []string) {
 	defer removePID() //nolint:errcheck
 
 	// Print startup box
+	allowedUUIDs, _ := buildRuntimePolicies(cfg, logger)
 	printServerBox(cfg, listenAddr, len(allowedUUIDs))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	flushStop := make(chan struct{})
+	userControls.StartPeriodicFlush(flushStop, 10*time.Second)
+	defer func() {
+		close(flushStop)
+		if err := userControls.Flush(); err != nil {
+			logger.Warn("final usage flush failed", zap.Error(err))
+		}
+	}()
+	if cfg.HotReload {
+		cfgMgr := server.NewConfigManager(*configPath, time.Second, logger)
+		go func() {
+			if err := cfgMgr.Start(ctx, applyRuntime); err != nil && ctx.Err() == nil {
+				logger.Error("config manager stopped", zap.Error(err))
+			}
+		}()
+	}
 
 	if err := srv.ListenAndServe(ctx); err != nil {
 		logger.Error("server error", zap.Error(err))
@@ -122,6 +162,9 @@ func runStart(args []string) {
 	}
 
 	forwarder.Wait()
+	if err := userControls.Flush(); err != nil {
+		logger.Warn("usage flush failed", zap.Error(err))
+	}
 	fmt.Println("\nHiVoid server stopped.")
 }
 
@@ -144,18 +187,6 @@ func printServerBox(cfg *config.ServerConfig, listenAddr string, numUUIDs int) {
 	fmt.Printf("└─────────────────────────────────────────────────┘\n\n")
 }
 
-// splitCSV splits a comma-separated string into a trimmed slice.
-func splitCSV(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
 // upper converts to uppercase using ASCII only.
 func upper(s string) string {
 	b := []byte(s)
@@ -165,4 +196,55 @@ func upper(s string) string {
 		}
 	}
 	return string(b)
+}
+
+func buildRuntimePolicies(cfg *config.ServerConfig, logger *zap.Logger) ([][16]byte, map[[16]byte]session.UserPolicy) {
+	allowedUUIDs := make([][16]byte, 0, len(cfg.AllowedUUIDs))
+	userPolicies := make(map[[16]byte]session.UserPolicy, len(cfg.Users))
+	for _, u := range cfg.Users {
+		tmpCfg := &config.Config{UUID: u.UUID, Server: "x", Port: 1}
+		id, err := tmpCfg.UUIDBytes()
+		if err != nil {
+			logger.Warn("skipping malformed user uuid", zap.String("uuid", u.UUID), zap.Error(err))
+			continue
+		}
+		userPolicies[id] = session.UserPolicy{
+			UUID:           id,
+			Email:          u.Email,
+			Mode:           intelligence.ModeFromString(u.Mode),
+			ObfsConfig:     session.ObfsConfigForName(u.Obfs),
+			MaxConnections: u.MaxConnections,
+			BandwidthLimit: u.BandwidthLimit,
+			ExpireAtUnix:   parseExpireAt(u.ExpireAt),
+			BytesIn:        u.BytesIn,
+			BytesOut:       u.BytesOut,
+			Enabled:        u.Enabled,
+		}
+		if u.Enabled {
+			allowedUUIDs = append(allowedUUIDs, id)
+		}
+	}
+	if len(cfg.Users) == 0 {
+		for _, raw := range cfg.AllowedUUIDs {
+			tmpCfg := &config.Config{UUID: raw, Server: "x", Port: 1}
+			b, err := tmpCfg.UUIDBytes()
+			if err != nil {
+				logger.Warn("skipping malformed uuid", zap.String("uuid", raw), zap.Error(err))
+				continue
+			}
+			allowedUUIDs = append(allowedUUIDs, b)
+		}
+	}
+	return allowedUUIDs, userPolicies
+}
+
+func parseExpireAt(raw string) int64 {
+	if raw == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }

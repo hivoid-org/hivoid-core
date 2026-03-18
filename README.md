@@ -6,7 +6,7 @@
 
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
 
-- **Version:** `v0.1.0`
+- **Version:** `v0.2.0`
 - **License:** `MPL-2.0`
 
 ---
@@ -17,9 +17,11 @@ Hi Void is a high-performance core for secure, scalable, and efficient proxy net
 - Real-time session management
 - UUID-based authentication
 - TLS support
-- Dynamic configuration
-- Structured logging
-- Low-latency, high-concurrency design
+- Traffic Quota & Volume Control (Data limits)
+- User Expiration Management (Auto-disconnect)
+- Concurrency Limiting (Max connections per user)
+- Dynamic configuration & Hot reload
+- Structured logging & Performance tracking
 
 ---
 
@@ -92,19 +94,50 @@ Edit `server.json` based on your deployment.
 
 ```json
 {
-  "server": "",
-  "port": 4433,
-  "cert": "cert.pem",
-  "key": "key.pem",
-  "mode": "balanced",
-  "obfs": "none",
+  "server": {
+    "listen": ":4433",
+    "mode": "PERFORMANCE",
+    "log_level": "info"
+  },
+  "security": {
+    "cert_file": "./cert.pem",
+    "key_file": "./key.pem"
+  },
+  "features": {
+    "hot_reload": true,
+    "connection_tracking": true,
+    "disconnect_expired": true
+  },
+  "users": [
+    {
+      "uuid": "11111111-1111-1111-1111-111111111111",
+      "email": "user1@example.com",
+      "enabled": true,
+      "max_connections": 2,
+      "bandwidth_limit": 1024,
+      "data_limit": 53687091200,
+      "expire_at": "2027-01-01T00:00:00Z",
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "mode": "PERFORMANCE",
+      "obfs": "none"
+    },
+    {
+      "uuid": "22222222-2222-2222-2222-222222222222",
+      "email": "vip@example.com",
+      "enabled": true,
+      "max_connections": 10,
+      "bandwidth_limit": 0,
+      "expire_at": "",
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "mode": "HIGH_PERFORMANCE",
+      "obfs": "tls"
+    }
+  ],
   "max_conns": 0,
   "allowed_hosts": [],
-  "blocked_hosts": [],
-  "allowed_uuids": [
-    "YOUR-CLIENT-UUID"
-  ],
-  "debug": false
+  "blocked_hosts": []
 }
 ```
 

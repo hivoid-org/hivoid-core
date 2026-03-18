@@ -7,16 +7,19 @@ import (
 
 // validModes is the set of accepted mode strings.
 var validModes = map[string]bool{
-	"performance": true,
-	"stealth":     true,
-	"balanced":    true,
-	"adaptive":    true,
+	"performance":      true,
+	"high_performance": true,
+	"stealth":          true,
+	"balanced":         true,
+	"adaptive":         true,
 }
 
 // validObfs is the set of accepted obfuscation names.
 var validObfs = map[string]bool{
 	"none":   true,
 	"random": true,
+	"http":   true,
+	"tls":    true,
 }
 
 // Validate returns a descriptive error for any invalid or missing field.
