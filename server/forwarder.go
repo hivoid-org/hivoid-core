@@ -141,8 +141,38 @@ func (f *Forwarder) Handler() transport.SessionHandler {
 	return func(sess *session.Session) {
 		ctx := sess.Connection().Context()
 		log := f.logger.With(zap.String("session", sess.ID().String()))
-		log.Info("proxy session started")
-		defer log.Info("proxy session ended")
+		userUUID := sess.ClientUUID()
+
+		rt := f.runtime.Load().(forwarderRuntime)
+		userPolicy, hasUserPolicy := rt.users[userUUID]
+		limit := rt.maxConnections
+		if hasUserPolicy && userPolicy.MaxConnections > 0 {
+			limit = userPolicy.MaxConnections
+		}
+
+		if rt.connectionTracking || limit > 0 {
+			active, ok := f.limiter.TryAcquire(userUUID, limit)
+			if !ok {
+				log.Warn("session limit reached for user",
+					zap.String("uuid", fmt.Sprintf("%x", userUUID)),
+					zap.Int("limit", limit),
+				)
+				sess.Close() // Reject the entire device connection
+				return
+			}
+			defer func() {
+				remaining := f.limiter.Release(userUUID)
+				log.Debug("session connection released", zap.Int64("active", remaining))
+			}()
+			log.Info("new session accepted (device connected)",
+				zap.Int("limit", limit),
+				zap.Int64("active", active),
+			)
+		}
+		// ------------------------------------------------------------------------------
+
+		log.Info("proxy session loop started")
+		defer log.Info("proxy session loop ended")
 
 		for {
 			// Phase 1: accept stream and read ProxyRequest
@@ -183,34 +213,6 @@ func (f *Forwarder) forward(
 			log.Warn("user policy reject", zap.String("target", target), zap.Error(err))
 			return
 		}
-	}
-	userPolicy, hasUserPolicy := rt.users[userUUID]
-	limit := rt.maxConnections
-
-	if hasUserPolicy && userPolicy.MaxConnections > 0 {
-		limit = userPolicy.MaxConnections
-	}
-	if rt.connectionTracking || limit > 0 {
-		active, ok := f.limiter.TryAcquire(userUUID, limit)
-		if !ok {
-			session.SendProxyErrToStream(stream, "connection limit reached")
-			stream.CancelRead(quic.StreamErrorCode(0))
-			stream.Close()
-			log.Warn("connection limit",
-				zap.String("target", target),
-				zap.Int("limit", limit),
-				zap.Int64("active", active),
-			)
-			return
-		}
-		defer func() {
-			remaining := f.limiter.Release(userUUID)
-			log.Debug("connection released", zap.Int64("active", remaining))
-		}()
-		log.Debug("connection accepted",
-			zap.Int("limit", limit),
-			zap.Int64("active", active),
-		)
 	}
 
 	// ACL check

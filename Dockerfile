@@ -36,7 +36,7 @@ CMD ["--help"]
 # Defaults to "dev" if not supplied.
 FROM base AS builder
 
-ARG VERSION=v0.3.0
+ARG VERSION=v0.4.0
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
