@@ -1,0 +1,40 @@
+version: '3.8'
+
+# Development Docker Compose file for testing the server and client components live.
+# Note that this setup prevents needing to install Golang on your local machine.
+
+services:
+  server:
+    build:
+      context: .
+      target: dev-server
+    container_name: hivoid-server-dev
+    # Maps local directory to /src in container for immediate code sync without rebuilds
+    volumes:
+      - .:/src
+    # Override this port depending on your server.json config port
+    ports:
+      - "8443:8443/tcp"
+      - "8443:8443/udp"
+    # Provide necessary arguments to run the development server
+    command: ["start", "--config", "/src/server.json"]
+    restart: on-failure
+
+  client:
+    build:
+      context: .
+      target: dev-client
+    container_name: hivoid-client-dev
+    volumes:
+      - .:/src
+    # Mount same configuration files seamlessly
+    # The client can communicate with the server container using hostname `server` 
+    # if `client.json` endpoints are configured correctly, e.g. "server": "server:8443"
+    command: ["start", "--config", "/src/client.json"]
+    depends_on:
+      - server
+    # The client itself likely exposes a proxy port like 1080
+    ports:
+      - "1080:1080/tcp"
+      - "1080:1080/udp"
+    restart: on-failure
