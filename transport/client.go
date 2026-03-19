@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/hivoid-org/hivoid-core/intelligence"
@@ -22,6 +23,7 @@ type Client struct {
 	insecure   bool
 	logger     *zap.Logger
 	manager    *session.Manager
+	control    func(fd int)
 }
 
 // ClientConfig holds client startup options.
@@ -37,6 +39,9 @@ type ClientConfig struct {
 	// UUID is the 16-byte client identity sent in ClientHello.
 	// Obtain it from config.Config.UUIDBytes(). Leave zero for anonymous.
 	UUID [16]byte
+	// SocketControl is an optional callback called after each socket is created.
+	// Essential for Android VpnService.protect().
+	SocketControl func(fd int)
 }
 
 // NewClient creates a new HiVoid client.
@@ -55,6 +60,7 @@ func NewClient(cfg ClientConfig) *Client {
 		insecure:   cfg.Insecure,
 		logger:     logger,
 		manager:    mgr,
+		control:    cfg.SocketControl,
 	}
 }
 
@@ -67,10 +73,27 @@ func (c *Client) Connect(ctx context.Context) (*session.Session, error) {
 		return nil, fmt.Errorf("resolve server addr: %w", err)
 	}
 
-	// Bind to an ephemeral local UDP port
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		return nil, fmt.Errorf("listen udp: %w", err)
+	// Bind to an ephemeral local UDP port with socket protection support
+	var udpConn *net.UDPConn
+	if c.control != nil {
+		lc := net.ListenConfig{
+			Control: func(network, address string, raw syscall.RawConn) error {
+				return raw.Control(func(fd uintptr) {
+					c.control(int(fd))
+				})
+			},
+		}
+		pc, err := lc.ListenPacket(ctx, "udp", ":0")
+		if err != nil {
+			return nil, fmt.Errorf("listen packet: %w", err)
+		}
+		udpConn = pc.(*net.UDPConn)
+	} else {
+		var err error
+		udpConn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			return nil, fmt.Errorf("listen udp: %w", err)
+		}
 	}
 
 	// Increase OS UDP buffers for high-throughput QUIC

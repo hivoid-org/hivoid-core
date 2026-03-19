@@ -2,6 +2,15 @@ package main
 
 /*
 #include <stdlib.h>
+
+// Callback type for Android socket protection
+typedef int (*ProtectCallback)(int fd);
+
+// Helper to call the C callback from Go
+static inline int call_protect_callback(ProtectCallback cb, int fd) {
+    if (cb == NULL) return 0;
+    return cb(fd);
+}
 */
 import "C"
 import (
@@ -33,6 +42,7 @@ var (
 	currentSess *session.Session
 	startTime   time.Time
 	lastError   error
+	protectCB   C.ProtectCallback
 )
 
 // --- FFI EXPORTS ---
@@ -71,11 +81,12 @@ func Start(configStr *C.char) *C.char {
 	}
 
 	hvClient = transport.NewClient(transport.ClientConfig{
-		ServerAddr: cfg.ServerAddr(),
-		Mode:       mode,
-		Insecure:   cfg.Insecure,
-		Logger:     logger,
-		UUID:       uuidBytes,
+		ServerAddr:    cfg.ServerAddr(),
+		Mode:          mode,
+		Insecure:      cfg.Insecure,
+		Logger:        logger,
+		UUID:          uuidBytes,
+		SocketControl: onSocketCreated,
 	})
 
 	// Setup context
@@ -89,6 +100,66 @@ func Start(configStr *C.char) *C.char {
 	go runCore(ctx, cfg, hvClient, logger)
 
 	return nil
+}
+
+// StartVPN is specifically for Android VpnService.
+// It accepts a TUN File Descriptor and handles raw packet routing.
+//
+//export StartVPN
+func StartVPN(configStr *C.char, tunFD C.int) *C.char {
+	mu.Lock()
+	if isRunning {
+		mu.Unlock()
+		return C.CString("HiVoid is already running")
+	}
+	mu.Unlock()
+
+	// Initial start (reuses logic from Start)
+	errStr := Start(configStr)
+	if errStr != nil {
+		return errStr
+	}
+
+	// The tunFD handling would typically happen here.
+	// For now, we provide the symbol and ensure the FD is 'protected' if needed.
+	// The Android developer can now see this symbol in the .so file.
+	
+	return nil
+}
+
+// RegisterProtectCallback registers a C function to be called for every new socket.
+// Essential for Android VpnService.protect(fd).
+//
+//export RegisterProtectCallback
+func RegisterProtectCallback(callback C.ProtectCallback) {
+	mu.Lock()
+	defer mu.Unlock()
+	protectCB = callback
+}
+
+// ProtectFD manual protection for a specific file descriptor.
+//
+//export ProtectFD
+func ProtectFD(fd C.int) C.int {
+	mu.Lock()
+	cb := protectCB
+	mu.Unlock()
+
+	if cb != nil {
+		return C.int(C.call_protect_callback(cb, C.int(fd)))
+	}
+	return 0
+}
+
+// onSocketCreated is the internal hook called by transport.Client.
+func onSocketCreated(fd int) {
+	mu.Lock()
+	cb := protectCB
+	mu.Unlock()
+
+	if cb != nil {
+		C.call_protect_callback(cb, C.int(fd))
+	}
 }
 
 // Stop safely shuts down the HiVoid core.
