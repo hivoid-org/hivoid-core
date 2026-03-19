@@ -1,0 +1,59 @@
+# HiVoid FFI Cross-Build Dockerfile
+# This Dockerfile produces shared libraries for Windows, Linux, and Android.
+#
+# Supported Targets:
+#   Windows: amd64 (64-bit), 386 (x86)
+#   Linux:   amd64 (64-bit), 386 (x86)
+#   Android: arm64 (v8), arm (v7), amd64 (x86_64), 386 (x86)
+
+FROM golang:1.24-bookworm AS builder
+
+# 1. Install dependencies for cross-compilation
+# mingw-w64: for Windows FFI
+# gcc-multilib: for Linux x86 FFI
+# build-essential: standard tools
+# wget, unzip: for NDK installation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates zip \
+    build-essential \
+    gcc-multilib \
+    mingw-w64 \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Install Android NDK (r27)
+# Use cache mount for the download to avoid re-downloading if the layer is invalidated
+ENV NDK_VERSION=r27
+ENV NDK_HOME=/opt/android-ndk
+RUN --mount=type=cache,target=/tmp \
+    if [ ! -d "${NDK_HOME}" ]; then \
+        wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O /tmp/ndk.zip && \
+        unzip -q /tmp/ndk.zip -d /opt && \
+        mv /opt/android-ndk-${NDK_VERSION} ${NDK_HOME} && \
+        rm /tmp/ndk.zip; \
+    fi
+
+# 3. Add Android NDK toolchain to PATH
+# Clang compilers for different ABIs
+ENV PATH="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+# Default Android API level for all builds (API 35 = Android 15)
+ENV API_LEVEL=35
+
+# 4. Prepare Go source
+ARG VERSION=dev
+ENV VERSION=${VERSION}
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 5. Build HiVoid Shared Libraries
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    chmod +x ./scripts/build_ffi_internal.sh && ./scripts/build_ffi_internal.sh
+
+# 6. Final Artifact stage: collect only the generated files
+FROM scratch AS artifacts
+COPY --from=builder /dist /

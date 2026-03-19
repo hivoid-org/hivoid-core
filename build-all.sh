@@ -22,6 +22,13 @@ if ! docker buildx version >/dev/null 2>&1; then
     exit 1
 fi
 
+# 1.5 Version Procurement
+if [ -z "$VERSION" ]; then
+    read -p "Enter build version (default: dev): " INPUT_VERSION
+    VERSION=${INPUT_VERSION:-dev}
+fi
+echo -e "${BLUE}==>${NC} Target Version: ${VERSION}"
+
 # Ensure an active Buildx builder is present
 BUILDER_NAME="hivoid-cross-builder"
 echo -e "${BLUE}==>${NC} Ensuring Buildx builder instance '${BUILDER_NAME}' exists..."
@@ -45,6 +52,7 @@ echo "This will compile Linux, Windows static artifacts."
 docker buildx build \
     --builder "$BUILDER_NAME" \
     --target artifacts \
+    --build-arg VERSION="$VERSION" \
     --output type=local,dest=./dist \
     --file Dockerfile \
     .

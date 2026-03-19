@@ -68,6 +68,17 @@ go build -o hivoid-server ./cmd/server
 go build -o hivoid-client ./cmd/client
 ```
 
+Or use Make targets (recommended):
+
+```bash
+make build
+make build-server
+make build-client
+make doctor
+```
+
+> If you run `make` inside `dist/`, targets are automatically forwarded to the repository root.
+
 ### 3) Generate TLS certificate (example)
 
 ```bash
@@ -237,4 +248,3 @@ Structured logs cover:
 
 This project is licensed under the **Mozilla Public License 2.0 (MPL-2.0)**.  
 See the `LICENSE` file for details.
-
