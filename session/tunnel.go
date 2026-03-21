@@ -96,6 +96,7 @@ func (c *TunnelConn) Read(b []byte) (int, error) {
 	if n < len(plain) {
 		c.rbuf = plain[n:]
 	}
+	c.sess.TrafficRecv.Add(uint64(n)) // Track received traffic
 	return n, nil
 }
 
@@ -168,6 +169,7 @@ func (c *TunnelConn) Write(b []byte) (int, error) {
 		total += len(chunk)
 		b = b[len(chunk):]
 	}
+	c.sess.TrafficSent.Add(uint64(total)) // Track sent traffic
 	return total, nil
 }
 

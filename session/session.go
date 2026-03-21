@@ -129,6 +129,10 @@ type Session struct {
 
 	// Derived keys (kept for rekey chaining)
 	currentKeys *hvcrypto.DerivedKeys
+
+	// Traffic monitoring (session-lifetime counters)
+	TrafficSent atomic.Uint64
+	TrafficRecv atomic.Uint64
 }
 
 // Config holds session configuration options.
@@ -208,6 +212,11 @@ func (s *Session) State() State {
 
 // Connection returns the underlying QUIC connection.
 func (s *Session) Connection() quic.Connection { return s.conn }
+
+// GetTrafficStats returns the total bytes sent and received during this session.
+func (s *Session) GetTrafficStats() (uint64, uint64) {
+	return s.TrafficSent.Load(), s.TrafficRecv.Load()
+}
 
 // PerformHandshakeAsClient executes the client-side hybrid key exchange.
 // Must be called immediately after QUIC connection is established.
@@ -417,6 +426,7 @@ func (s *Session) SendStream(ctx context.Context, data []byte) error {
 		return fmt.Errorf("write frame: %w", err)
 	}
 
+	s.TrafficSent.Add(uint64(len(data)))
 	sent := s.sentBytes.Add(int64(len(data)))
 	// Check if rekey is needed by volume (only client initiates rekey)
 	if s.isClient && sent > s.rekeyBytes {
@@ -464,6 +474,7 @@ func (s *Session) RecvStream(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("decrypt: %w", err)
 	}
 
+	s.TrafficRecv.Add(uint64(len(plain)))
 	return plain, nil
 }
 

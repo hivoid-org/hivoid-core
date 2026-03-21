@@ -10,7 +10,7 @@ mkdir -p "${DIST_DIR}"
 
 # Build variables
 LDFLAGS="-s -w"
-SRC="./ffi/hivoid_ffi.go"
+SRC="./ffi"
 API_LEVEL=${API_LEVEL:-35}
 VERSION=${VERSION:-dev}
 

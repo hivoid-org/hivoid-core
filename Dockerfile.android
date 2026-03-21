@@ -1,0 +1,32 @@
+# Dockerfile.android — Build HiVoid Android FFI libraries
+# FIX: NDK r26b → r27c (سازگار با Go 1.24 و API 34)
+FROM golang:1.24-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates wget unzip zip build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# FIX: NDK r27c — سازگار با Go 1.24 + API 34
+# r26b با Go 1.24 مشکل libgcc داشت
+RUN mkdir -p /opt/android-ndk && \
+    wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip -O /tmp/ndk.zip && \
+    unzip -q /tmp/ndk.zip -d /tmp && \
+    mv /tmp/android-ndk-r27c/* /opt/android-ndk/ && \
+    rm -rf /tmp/ndk.zip /tmp/android-ndk-r27c
+
+ENV NDK_ROOT=/opt/android-ndk
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ENV VERSION=${VERSION}
+
+RUN chmod +x ./scripts/build_android_internal.sh && ./scripts/build_android_internal.sh
+
+FROM scratch AS artifacts
+COPY --from=builder /src/dist/*.zip /
+COPY --from=builder /src/dist/android /android

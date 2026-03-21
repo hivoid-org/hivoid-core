@@ -18,3 +18,5 @@ beta*.md
 hivoid-*
 github.py
 Makefile
+
+dist/andorid/
