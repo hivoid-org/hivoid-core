@@ -152,7 +152,7 @@ func AttachTUN(tunFD C.int) *C.char {
 		return C.CString("invalid TUN fd")
 	}
 
-	// صبر کن SOCKS آماده بشه
+	// Wait for SOCKS to be ready
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", sp)
 	ready := false
 	for i := 0; i < 20; i++ {

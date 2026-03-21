@@ -12,7 +12,7 @@ static void android_log(const char* tag, const char* msg) {
 import "C"
 import "unsafe"
 
-// alog لاگ مستقیم به Android logcat
+// alog logs directly to Android logcat
 func alog(tag, msg string) {
 	ctag := C.CString(tag)
 	cmsg := C.CString(msg)

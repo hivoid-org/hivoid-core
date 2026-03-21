@@ -5,18 +5,11 @@ set -e
 
 mkdir -p dist/android
 
-# FIX: API level رو 34 کردیم (مطابق emulator و دستگاه‌های مدرن)
-# فرمت: GOARCH:ABI_DIR:COMPILER_PREFIX:API_LEVEL
-#
-# FIX: armeabi-v7a و x86 (32-bit) حذف شدن:
-#   - API 34 emulator فقط x86_64 است
-#   - دستگاه‌های واقعی جدید فقط arm64-v8a دارن
-#   - اگه نیاز به 32-bit داری، دو خط آخر رو uncomment کن
 ARCHS=(
     "arm64:arm64-v8a:aarch64-linux-android:34"
     "amd64:x86_64:x86_64-linux-android:34"
-    # "arm:armeabi-v7a:armv7a-linux-androideabi:24"   # فقط برای دستگاه‌های قدیمی
-    # "386:x86:i686-linux-android:24"                 # فقط برای emulator قدیمی
+    "arm:armeabi-v7a:armv7a-linux-androideabi:34"
+    "386:x86:i686-linux-android:34"
 )
 
 for entry in "${ARCHS[@]}"; do
@@ -27,9 +20,9 @@ for entry in "${ARCHS[@]}"; do
 
     echo "==> Building Android FFI: GOARCH=${GOARCH} ABI=${ABI_DIR} API=${API_LEVEL}"
 
-    # FIX: مسیر صحیح toolchain در NDK r26+
-    # شکل اسم binary: {PREFIX}{API_LEVEL}-clang
-    # مثال: aarch64-linux-android34-clang
+    # FIX: Correct toolchain path for NDK r26+
+    # Binary name format: {PREFIX}{API_LEVEL}-clang
+    # Example: aarch64-linux-android34-clang
     TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin"
     CC_BIN="${TOOLCHAIN}/${PREFIX}${API_LEVEL}-clang"
     CXX_BIN="${TOOLCHAIN}/${PREFIX}${API_LEVEL}-clang++"
@@ -46,7 +39,7 @@ for entry in "${ARCHS[@]}"; do
     export GOARCH=${GOARCH}
     export CC="${CC_BIN}"
     export CXX="${CXX_BIN}"
-    # FIX: AR هم باید از NDK باشه، نه system default
+    # FIX: Use AR from NDK instead of system default
     export AR="${TOOLCHAIN}/llvm-ar"
 
     go build -buildmode=c-shared \

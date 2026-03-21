@@ -24,7 +24,7 @@ const (
 	mtu      = 1500
 )
 
-// dnsCache: IP → hostname از DNS responses
+// dnsCache: IP → hostname from DNS responses
 type dnsCache struct {
 	mu      sync.RWMutex
 	entries map[string]string
@@ -186,7 +186,7 @@ func (e *tunEngine) handleUDP(k fourTuple, payload []byte) {
 	}
 }
 
-// parseDNSAndCache: A record های DNS response رو cache میکنه
+// parseDNSAndCache: Caches A records from DNS responses
 func parseDNSAndCache(data []byte) {
 	if len(data) < 12 {
 		return
@@ -217,7 +217,7 @@ func parseDNSAndCache(data []byte) {
 		}
 		if rType == 1 && rdLen == 4 { // A record
 			ip := net.IP(data[offset : offset+4]).String()
-			// hostname ممکنه trailing dot داشته باشه
+			// hostname may have a trailing dot
 			host := strings.TrimSuffix(hostname, ".")
 			if host != "" && ip != "" {
 				globalDNSCache.set(ip, host)
@@ -289,7 +289,7 @@ type tcpConn struct {
 	seq     uint32
 	ack     uint32
 	mu      sync.Mutex
-	// buffer اولین bytes داده رو نگه میداره تا SNI استخراج بشه
+	// buffer holds initial bytes for SNI extraction
 	buf     []byte
 	target  string
 	dialing bool
@@ -311,7 +311,7 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 		dstIP := net.IP(k.dstIP[:]).String()
 		target := fmt.Sprintf("%s:%d", dstIP, k.dstPort)
 
-		// اول DNS cache چک کن
+		// Check DNS cache first
 		if hostname, found := globalDNSCache.get(dstIP); found {
 			target = fmt.Sprintf("%s:%d", hostname, k.dstPort)
 		}
@@ -328,11 +328,10 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 			target: target,
 		}
 
-		// برای HTTPS (port 443)، اگه hostname از cache نداشتیم،
-		// اول SYN-ACK بده، صبر کن ClientHello بیاد، SNI رو بخون
+		// send SYN-ACK first, wait for ClientHello, then extract SNI
 		if k.dstPort == 443 {
 			if _, hasHostname := globalDNSCache.get(dstIP); !hasHostname {
-				c.dialing = true // pending — منتظر داده
+				c.dialing = true // pending — waiting for data
 			}
 		}
 
@@ -341,7 +340,7 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 		c.seq++
 
 		if !c.dialing {
-			// hostname داریم، مستقیم dial کن
+			// hostname found, dial directly
 			remote, err := e.dialSOCKS5(target)
 			if err != nil {
 				e.conns.Delete(k)
@@ -390,18 +389,18 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 	defer c.mu.Unlock()
 
 	if c.dialing {
-		// در حال جمع‌آوری داده برای SNI extraction
+		// Collecting data for SNI extraction
 		c.buf = append(c.buf, payload...)
 
-		// سعی کن SNI رو از TLS ClientHello بخونیم
+		// Attempt to extract SNI from TLS ClientHello
 		if sni := extractSNI(c.buf); sni != "" {
-			// SNI پیدا شد — hostname رو update کن و cache کن
+			// SNI found — update and cache hostname
 			dstIP := net.IP(c.tuple.dstIP[:]).String()
 			globalDNSCache.set(dstIP, sni)
 			c.target = fmt.Sprintf("%s:%d", sni, c.tuple.dstPort)
 			c.dialing = false
 
-			// الان dial کن
+			// Dial now
 			go func(buf []byte, target string) {
 				remote, err := e.dialSOCKS5(target)
 				if err != nil {
@@ -415,14 +414,14 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 				seq := c.seq
 				c.mu.Unlock()
 
-				// داده‌های buffered رو بفرست
+				// Send buffered data
 				remote.Write(buf)
 				e.writeTCPResponse(k, seq, ack, 0x10)
 				go c.pumpRemote()
 			}(c.buf, c.target)
 			c.buf = nil
 		} else if len(c.buf) > 4096 {
-			// اگه خیلی داده جمع شد و SNI پیدا نشد، با IP dial کن
+			// If too much data and SNI not found, dial using IP
 			c.dialing = false
 			buf := c.buf
 			c.buf = nil
@@ -443,7 +442,7 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 				go c.pumpRemote()
 			}()
 		}
-		// ACK بده حتی وقتی در حال buffer کردنیم
+		// Send ACK even while buffering
 		c.ack += uint32(len(payload))
 		e.writeTCPResponse(k, c.seq, c.ack, 0x10)
 		return
@@ -457,7 +456,7 @@ func (e *tunEngine) handleTCP(k fourTuple, segment []byte) {
 	e.writeTCPResponse(k, c.seq, c.ack, 0x10)
 }
 
-// extractSNI: SNI رو از TLS ClientHello استخراج میکنه
+// extractSNI: Extracts SNI from TLS ClientHello
 // TLS record: ContentType(1) Version(2) Length(2) Handshake...
 // Handshake: Type(1) Length(3) ClientHello...
 // ClientHello: Version(2) Random(32) SessionID(1+N) CipherSuites(2+N) Compression(1+N) Extensions(2+N)
@@ -476,7 +475,7 @@ func extractSNI(data []byte) string {
 	}
 	recordLen := int(binary.BigEndian.Uint16(data[3:5]))
 	if len(data) < 5+recordLen {
-		return "" // هنوز کافی نیست
+		return "" // Not enough data yet
 	}
 
 	pos := 5

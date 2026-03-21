@@ -32,13 +32,13 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DIR="$(cd "${SCRIPT_DIR}/../HiVoid-App" 2>/dev/null && pwd)"
 
-# FIX: خط اشتباه JNILIBS="$(dirname "$0")" حذف شد
+# FIX: Removed incorrect JNILIBS definition
 JNILIBS="${APP_DIR}/android/app/src/main/jniLibs"
 
 echo "==> Copying .so files to jniLibs..."
 if [ -d "${JNILIBS}" ]; then
-    # FIX: فقط ABI هایی که build کردیم (arm64-v8a و x86_64)
-    for ABI in arm64-v8a x86_64; do
+    # FIX: Copy all ABIs for full compatibility
+    for ABI in arm64-v8a x86_64 armeabi-v7a x86; do
         SRC="dist/android/${ABI}/libhivoid.so"
         DST_DIR="${JNILIBS}/${ABI}"
         DST="${DST_DIR}/libhivoid.so"
