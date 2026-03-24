@@ -37,7 +37,9 @@ var (
 	protectCallCount uint64
 	currentSocksPort int
 	currentDNSPort   int
-	// Traffic monitoring state
+
+	// FIX: traffic stats با mutex جداگانه — از deadlock با Status جلوگیری میکنه
+	statsMu      sync.Mutex
 	lastSent     uint64
 	lastRecv     uint64
 	lastStatTime time.Time
@@ -85,97 +87,6 @@ func Start(configStr *C.char) *C.char {
 	return startCore(cfg)
 }
 
-//export StartVPN
-func StartVPN(configStr *C.char, tunFD C.int) *C.char {
-	alog("HiVoidFFI", fmt.Sprintf("StartVPN() called, tunFD=%d", int(tunFD)))
-	mu.Lock()
-	if isRunning {
-		mu.Unlock()
-		return C.CString("HiVoid is already running")
-	}
-	mu.Unlock()
-
-	cfg, err := parseConfig(C.GoString(configStr))
-	if err != nil {
-		return C.CString(fmt.Sprintf("config error: %v", err))
-	}
-	if cfg.DNSPort == 0 {
-		cfg.DNSPort = 10853
-	}
-
-	mu.Lock()
-	currentSocksPort = cfg.SocksPort
-	currentDNSPort = cfg.DNSPort
-	errMsg := startCore(cfg)
-	mu.Unlock()
-
-	if errMsg != nil {
-		return errMsg
-	}
-
-	go func() {
-		socksAddr := fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
-		for i := 0; i < 40; i++ {
-			conn, err := net.DialTimeout("tcp", socksAddr, 500*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				alog("HiVoidFFI", "SOCKS5 ready, attaching TUN from StartVPN")
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		alog("HiVoidFFI", fmt.Sprintf("StartVPN: runTunForwarder fd=%d", int(tunFD)))
-		runTunForwarder(int(tunFD), cfg.SocksPort, cfg.DNSPort)
-	}()
-
-	return nil
-}
-
-//export AttachTUN
-func AttachTUN(tunFD C.int) *C.char {
-	alog("HiVoidFFI", fmt.Sprintf("AttachTUN() called, tunFD=%d", int(tunFD)))
-
-	mu.Lock()
-	sp := currentSocksPort
-	dp := currentDNSPort
-	running := isRunning
-	mu.Unlock()
-
-	alog("HiVoidFFI", fmt.Sprintf("AttachTUN: running=%v socks=%d dns=%d", running, sp, dp))
-
-	if !running || sp == 0 {
-		msg := fmt.Sprintf("core not ready (running=%v, socks_port=%d)", running, sp)
-		alog("HiVoidFFI", "AttachTUN FAILED: "+msg)
-		return C.CString(msg)
-	}
-	if int(tunFD) <= 0 {
-		return C.CString("invalid TUN fd")
-	}
-
-	// Wait for SOCKS to be ready
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", sp)
-	ready := false
-	for i := 0; i < 20; i++ {
-		conn, err := net.DialTimeout("tcp", socksAddr, 500*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			ready = true
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	if !ready {
-		alog("HiVoidFFI", fmt.Sprintf("AttachTUN: SOCKS5 not ready at %s", socksAddr))
-		return C.CString(fmt.Sprintf("SOCKS5 proxy not ready at %s", socksAddr))
-	}
-
-	alog("HiVoidFFI", fmt.Sprintf("AttachTUN: starting runTunForwarder fd=%d socks=%d dns=%d",
-		int(tunFD), sp, dp))
-
-	go runTunForwarder(int(tunFD), sp, dp)
-	return nil
-}
 
 //export GetSOCKSPort
 func GetSOCKSPort() C.int { return C.int(1080) }
@@ -183,22 +94,29 @@ func GetSOCKSPort() C.int { return C.int(1080) }
 //export GetDNSPort
 func GetDNSPort() C.int { return C.int(10853) }
 
+// FIX: statsMu جداگانه — دیگه با mu/Status deadlock نمیکنه
+//
 //export GetTrafficStats
 func GetTrafficStats() *C.char {
+	// session رو زیر mu بگیر اما سریع آزاد کن
 	mu.Lock()
-	defer mu.Unlock()
+	sess := currentSess
+	mu.Unlock()
 
 	var totalSent, totalRecv uint64
-	if currentSess != nil {
-		totalSent, totalRecv = currentSess.GetTrafficStats()
+	if sess != nil {
+		totalSent, totalRecv = sess.GetTrafficStats()
 	}
+
+	statsMu.Lock()
+	defer statsMu.Unlock()
 
 	now := time.Now()
 	var upSpeed, downSpeed uint64
 
 	if !lastStatTime.IsZero() {
 		duration := now.Sub(lastStatTime).Seconds()
-		if duration > 0.1 { // Avoid division by zero or jitter
+		if duration > 0.1 {
 			if totalSent >= lastSent {
 				upSpeed = uint64(float64(totalSent-lastSent) / duration)
 			}
@@ -234,19 +152,23 @@ func TestLatency() C.int {
 	}
 
 	start := time.Now()
-	// Test against a standard connectivity endpoint via the tunnel
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := sess.DialTunnel(ctx, "cp.cloudflare.com:80")
+	// Use standard latency endpoint as per v0.6.0 requirements
+	conn, err := sess.DialTunnel(ctx, "www.google.com:80")
 	if err != nil {
 		return -1
 	}
 	defer conn.Close()
 
-	// Measure handshake time
-	elapsed := time.Since(start)
-	return C.int(elapsed.Milliseconds())
+	// Minimal HTTP request to ensure path is fully functional
+	_, _ = conn.Write([]byte("GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n"))
+	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _ = conn.Read(buf)
+
+	return C.int(time.Since(start).Milliseconds())
 }
 
 //export RegisterNativeProtect
@@ -339,6 +261,8 @@ func startCore(cfg *config.Config) *C.char {
 	hvClient = transport.NewClient(transport.ClientConfig{
 		ServerAddr:    cfg.ServerAddr(),
 		Mode:          intelligence.ModeFromString(cfg.Mode),
+		ObfsName:      cfg.Obfs,
+		ObfsConfig:    session.ObfsConfigForName(cfg.Obfs),
 		Insecure:      cfg.Insecure,
 		Logger:        logger,
 		UUID:          uuidBytes,
@@ -351,11 +275,14 @@ func startCore(cfg *config.Config) *C.char {
 	isRunning = true
 	lastError = nil
 
-	alog("HiVoidFFI", "startCore: core goroutine starting")
-	// Reset traffic stats for a new session
+	// reset traffic stats
+	statsMu.Lock()
 	lastSent = 0
 	lastRecv = 0
 	lastStatTime = time.Time{}
+	statsMu.Unlock()
+
+	alog("HiVoidFFI", "startCore: core goroutine starting")
 	go runCore(ctx, cfg, hvClient, logger)
 	return nil
 }
@@ -375,6 +302,8 @@ func parseConfig(s string) (*config.Config, error) {
 	if cfg.SocksPort == 0 { cfg.SocksPort = 1080 }
 	if cfg.DNSUpstream == "" { cfg.DNSUpstream = "8.8.8.8:53" }
 	if cfg.Name == "" { cfg.Name = "hivoid" }
+	// FIX: default dns_port که قبلاً حذف شده بود
+	if cfg.DNSPort == 0 { cfg.DNSPort = 10853 }
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -404,6 +333,7 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 
 	if cfg.Obfs != "" && cfg.Obfs != "none" {
 		trClient.Manager().SetObfuscation(session.ObfsConfigForName(cfg.Obfs))
+		trClient.Manager().SetClientParams(intelligence.ModeFromString(cfg.Mode), cfg.Obfs)
 	}
 
 	alog("HiVoidFFI", "runCore: connecting...")

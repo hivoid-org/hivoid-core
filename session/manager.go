@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
@@ -41,6 +42,9 @@ type Manager struct {
 
 	// uuid is sent in ClientHello on outbound (client) connections.
 	uuid [16]byte
+	// clientMode and clientObfs are sent in ClientHello on outbound connections.
+	clientMode uint8
+	clientObfs uint8
 	// allowedUUIDs is the server-side allowlist (empty = allow all).
 	allowedUUIDs [][16]byte
 	// userPolicies are applied after handshake based on client UUID.
@@ -81,7 +85,22 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 		_ = s.Close()
 		return nil, fmt.Errorf("server handshake: %w", err)
 	}
+
 	if p, ok := policies[s.ClientUUID()]; ok && p.Enabled {
+		// Enforce policy: client must request the settings defined by the admin
+		requestedMode, requestedObfs := s.ClientRequestedPolicy()
+		if uint8(p.Mode) != requestedMode || ObfsNameToID(ObfsConfigToName(p.ObfsConfig)) != requestedObfs {
+			id := s.ClientUUID()
+			m.logger.Warn("policy mismatch: rejecting session",
+				zap.String("uuid", hex.EncodeToString(id[:])),
+				zap.Uint8("req_mode", requestedMode),
+				zap.Uint8("policy_mode", uint8(p.Mode)),
+				zap.Uint8("req_obfs", requestedObfs),
+				zap.Uint8("policy_obfs", ObfsNameToID(ObfsConfigToName(p.ObfsConfig))),
+			)
+			_ = s.conn.CloseWithError(1, "policy mismatch")
+			return nil, fmt.Errorf("requested policy does not match user configuration")
+		}
 		s.ApplyRuntime(p.Mode, p.ObfsConfig)
 	}
 
@@ -104,6 +123,8 @@ func (m *Manager) Dial(ctx context.Context, conn quic.Connection) (*Session, err
 	cfg.ObfsConfig = m.obfsCfg
 	m.mu.RLock()
 	cfg.UUID = m.uuid
+	cfg.ClientMode = m.clientMode
+	cfg.ClientObfs = m.clientObfs
 	m.mu.RUnlock()
 
 	s, err := New(conn, cfg)
@@ -194,6 +215,14 @@ func (m *Manager) SetClientUUID(u [16]byte) {
 	m.uuid = u
 }
 
+// SetClientParams configures the mode and obfs sent during outbound handshake.
+func (m *Manager) SetClientParams(mode intelligence.Mode, obfsName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clientMode = uint8(mode)
+	m.clientObfs = ObfsNameToID(obfsName)
+}
+
 // SetAllowedUUIDs configures the server-side UUID allowlist.
 // Connections from clients whose UUID is not in the list will be rejected.
 // Pass nil or an empty slice to allow all clients.
@@ -262,6 +291,34 @@ func ObfsConfigForName(name string) obfuscation.Config {
 		cfg.Enabled = false
 	}
 	return cfg
+}
+
+// ObfsConfigToName maps an obfuscation config back to its name.
+func ObfsConfigToName(cfg obfuscation.Config) string {
+	if !cfg.Enabled {
+		return "none"
+	}
+	if cfg.PaddingPct == 0.5 && cfg.MaxPaddingBytes == 384 {
+		return "http"
+	}
+	if cfg.PaddingPct == 0.7 && cfg.MaxPaddingBytes == 512 {
+		return "tls"
+	}
+	return "random"
+}
+
+// ObfsNameToID converts an obfuscation config string to its wire ID for ClientHello.
+func ObfsNameToID(name string) uint8 {
+	switch toLowerASCII(name) {
+	case "random":
+		return 1
+	case "http":
+		return 2
+	case "tls":
+		return 3
+	default:
+		return 0 // "none" or empty
+	}
 }
 
 func toLowerASCII(s string) string {

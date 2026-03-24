@@ -50,9 +50,13 @@ for entry in "${ARCHS[@]}"; do
     echo "  -> ${OUT_DIR}/libhivoid.so ($(du -sh "${OUT_DIR}/libhivoid.so" | cut -f1))"
 done
 
-# Bundle
-cd dist
-zip -r "hivoid-android-sdk-${VERSION}.zip" android/
-cd ..
+# Bundle each ABI separately
+cd dist/android
+for ABI in *; do
+    if [ -d "$ABI" ]; then
+        zip -r "../../dist/hivoid-android-sdk-${ABI}-${VERSION}.zip" "$ABI"
+    fi
+done
+cd ../..
 
-echo "==> All Android builds done."
+echo "==> All Android builds and individual zips are ready."

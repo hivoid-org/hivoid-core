@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/hivoid-org/hivoid-core/intelligence"
+	"github.com/hivoid-org/hivoid-core/obfuscation"
 	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/quic-go/quic-go"
 	"go.uber.org/zap"
@@ -32,6 +33,10 @@ type ClientConfig struct {
 	ServerAddr string
 	// Mode is the default operating mode.
 	Mode intelligence.Mode
+	// ObfsName is the requested obfuscation type name.
+	ObfsName string
+	// ObfsConfig is the obfuscation config.
+	ObfsConfig obfuscation.Config
 	// Insecure disables TLS certificate verification (testing only).
 	Insecure bool
 	// Logger is an optional structured logger.
@@ -51,6 +56,10 @@ func NewClient(cfg ClientConfig) *Client {
 		logger, _ = zap.NewProduction()
 	}
 	mgr := session.NewManager(true, cfg.Mode, logger)
+	if cfg.ObfsName != "" {
+		mgr.SetObfuscation(cfg.ObfsConfig)
+		mgr.SetClientParams(cfg.Mode, cfg.ObfsName)
+	}
 	if cfg.UUID != ([16]byte{}) {
 		mgr.SetClientUUID(cfg.UUID)
 	}

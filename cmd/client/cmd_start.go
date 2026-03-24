@@ -74,6 +74,8 @@ func runStart(args []string) {
 	hvClient := transport.NewClient(transport.ClientConfig{
 		ServerAddr: cfg.ServerAddr(),
 		Mode:       mode,
+		ObfsName:   cfg.Obfs,
+		ObfsConfig: session.ObfsConfigForName(cfg.Obfs),
 		Insecure:   cfg.Insecure,
 		Logger:     logger,
 		UUID:       uuidBytes,

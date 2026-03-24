@@ -10,6 +10,7 @@ import (
 
 	"github.com/hivoid-org/hivoid-core/config"
 	"github.com/hivoid-org/hivoid-core/intelligence"
+	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
 	"github.com/hivoid-org/hivoid-core/utils"
 )
@@ -21,6 +22,7 @@ func runPing(args []string) {
 	configPath := fs.String("config", "", "Path to JSON config file")
 	uriStr := fs.String("uri", "", "HiVoid URI string")
 	count := fs.Int("c", 4, "Number of ping attempts")
+	testHttp := fs.Bool("http", true, "Test full HTTP latency to google.com/generate_204")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: hivoid-client ping --config <file.json> [-c 4]")
 		fmt.Fprintln(os.Stderr, "       hivoid-client ping --uri <hivoid://...> [-c 4]")
@@ -64,6 +66,8 @@ func runPing(args []string) {
 		hvClient := transport.NewClient(transport.ClientConfig{
 			ServerAddr: addr,
 			Mode:       mode,
+			ObfsName:   cfg.Obfs,
+			ObfsConfig: session.ObfsConfigForName(cfg.Obfs),
 			Insecure:   cfg.Insecure,
 			Logger:     logger,
 			UUID:       uuidBytes,
@@ -83,7 +87,35 @@ func runPing(args []string) {
 		}
 
 		results = append(results, elapsed)
-		fmt.Printf("  #%d  %s  (QUIC + handshake)\n", i, formatDuration(elapsed))
+		fmt.Printf("  #%d  %-8s (QUIC + handshake)\n", i, formatDuration(elapsed))
+
+		if *testHttp {
+			httpStart := time.Now()
+			// DialTunnel to google.com:80/443
+			// For generate_204 we just need any HTTP GET
+			conn, err := sess.DialTunnel(ctx, "www.google.com:80")
+			if err != nil {
+				fmt.Printf("      HTTP: FAIL (%v)\n", err)
+			} else {
+				// Send a simple HTTP GET for /generate_204
+				_, err = conn.Write([]byte("GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n"))
+				if err != nil {
+					fmt.Printf("      HTTP: FAIL (write %v)\n", err)
+				} else {
+					// Read response (we just care it's alive)
+					buf := make([]byte, 1024)
+					_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					_, err = conn.Read(buf)
+					if err != nil {
+						fmt.Printf("      HTTP: FAIL (read %v)\n", err)
+					} else {
+						httpElapsed := time.Since(httpStart)
+						fmt.Printf("      HTTP: %-8s (www.google.com/generate_204)\n", formatDuration(httpElapsed))
+					}
+				}
+				conn.Close()
+			}
+		}
 
 		sess.Close()
 		hvClient.Close()

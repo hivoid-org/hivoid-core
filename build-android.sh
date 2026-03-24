@@ -58,6 +58,6 @@ fi
 
 echo "----------------------------------------------------------------"
 echo "Build complete!"
-echo "  SDK zip: ./dist/hivoid-android-sdk-${VERSION}.zip"
-echo "  Libs:    ./dist/android/"
+echo "  SDK zips: ./dist/hivoid-android-sdk-*-${VERSION}.zip"
+echo "  Libs:     ./dist/android/"
 echo "----------------------------------------------------------------"

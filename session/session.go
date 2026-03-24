@@ -133,6 +133,10 @@ type Session struct {
 	// Traffic monitoring (session-lifetime counters)
 	TrafficSent atomic.Uint64
 	TrafficRecv atomic.Uint64
+
+	// Requested policy from client (ClientHello)
+	requestedMode uint8
+	requestedObfs uint8
 }
 
 // Config holds session configuration options.
@@ -150,6 +154,11 @@ type Config struct {
 	// AllowedUUIDs is the server-side allowlist. If non-empty, clients whose
 	// UUID is not in the list are rejected during handshake.
 	AllowedUUIDs [][16]byte
+
+	// ClientMode is the mode the client wants to use (client side only).
+	ClientMode uint8
+	// ClientObfs is the obfuscation type the client wants to use (client side only).
+	ClientObfs uint8
 }
 
 // DefaultConfig returns production-ready session defaults.
@@ -183,10 +192,12 @@ func New(conn quic.Connection, cfg Config) (*Session, error) {
 		rekeyAt:    time.Now().Add(cfg.RekeyInterval),
 		rekeyBytes: cfg.RekeyBytes,
 		engine:     cfg.Engine,
-		obfs:       obfuscation.New(cfg.ObfsConfig),
-		ctx:        ctx,
-		cancel:     cancel,
-		done:       make(chan struct{}),
+		obfs:          obfuscation.New(cfg.ObfsConfig),
+		ctx:           ctx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
+		requestedMode: cfg.ClientMode,
+		requestedObfs: cfg.ClientObfs,
 	}
 
 	// Build UUID allowlist map for O(1) lookups on the server side.
@@ -247,6 +258,8 @@ func (s *Session) PerformHandshakeAsClient() error {
 	copy(hello.X25519PublicKey[:], pub.X25519Public)
 	copy(hello.MLKEMEncapKey[:], pub.MLKEMEncapKey)
 	hello.UUID = s.uuid // client identity (may be zero for anonymous)
+	hello.Mode = s.requestedMode
+	hello.Obfs = s.requestedObfs
 
 	helloFrame := frames.NewControlFrame(hello.Encode())
 	if _, err := helloFrame.WriteTo(ctrlStream); err != nil {
@@ -312,6 +325,9 @@ func (s *Session) PerformHandshakeAsServer() error {
 
 	// Record the client's UUID and enforce the allowlist if configured.
 	s.clientUUID = clientHello.UUID
+	s.requestedMode = clientHello.Mode
+	s.requestedObfs = clientHello.Obfs
+
 	if len(s.allowedUUIDs) > 0 {
 		if _, ok := s.allowedUUIDs[s.clientUUID]; !ok {
 			_ = s.conn.CloseWithError(1, "unauthorized uuid")
@@ -657,6 +673,11 @@ func (s *Session) Salt() []byte {
 // Only meaningful on the server side after a successful handshake.
 func (s *Session) ClientUUID() [16]byte {
 	return s.clientUUID
+}
+
+// ClientRequestedPolicy returns the mode and obfs ID the client asked for.
+func (s *Session) ClientRequestedPolicy() (uint8, uint8) {
+	return s.requestedMode, s.requestedObfs
 }
 
 // ApplyRuntime updates runtime tunables for this session without reconnecting.

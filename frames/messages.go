@@ -34,13 +34,17 @@ type ClientHello struct {
 	// Sent as the last field so servers that only read the first 1249 bytes
 	// (old protocol) remain compatible — they simply ignore the trailing bytes.
 	UUID [16]byte
+	// Mode is the client's requested operating mode.
+	Mode uint8
+	// Obfs is the client's requested obfuscation type.
+	Obfs uint8
 }
 
 // clientHelloBase is the minimum wire size (pre-UUID, for backward compat).
 const clientHelloBase = 1 + 32 + 32 + 1184 // 1249
 
-// Size returns the wire encoding size (includes UUID).
-func (h *ClientHello) Size() int { return clientHelloBase + 16 } // 1265
+// Size returns the wire encoding size (includes UUID, Mode, and Obfs).
+func (h *ClientHello) Size() int { return clientHelloBase + 16 + 2 } // 1267
 
 // Encode marshals the ClientHello into bytes.
 func (h *ClientHello) Encode() []byte {
@@ -49,13 +53,12 @@ func (h *ClientHello) Encode() []byte {
 	copy(buf[1:33], h.SessionSalt[:])
 	copy(buf[33:65], h.X25519PublicKey[:])
 	copy(buf[65:clientHelloBase], h.MLKEMEncapKey[:])
-	copy(buf[clientHelloBase:], h.UUID[:])
+	copy(buf[clientHelloBase:clientHelloBase+16], h.UUID[:])
+	buf[clientHelloBase+16] = h.Mode
+	buf[clientHelloBase+17] = h.Obfs
 	return buf
 }
 
-// DecodeClientHello parses a ClientHello from raw bytes.
-// If the payload is at least 1265 bytes the UUID field is decoded;
-// shorter payloads (old clients) leave UUID as all-zeros.
 func DecodeClientHello(b []byte) (*ClientHello, error) {
 	if len(b) < clientHelloBase {
 		return nil, fmt.Errorf("client hello too short: %d < %d", len(b), clientHelloBase)
@@ -67,6 +70,10 @@ func DecodeClientHello(b []byte) (*ClientHello, error) {
 	copy(h.MLKEMEncapKey[:], b[65:clientHelloBase])
 	if len(b) >= clientHelloBase+16 {
 		copy(h.UUID[:], b[clientHelloBase:clientHelloBase+16])
+	}
+	if len(b) >= clientHelloBase+18 {
+		h.Mode = b[clientHelloBase+16]
+		h.Obfs = b[clientHelloBase+17]
 	}
 	return h, nil
 }
