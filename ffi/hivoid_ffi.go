@@ -38,7 +38,6 @@ var (
 	currentSocksPort int
 	currentDNSPort   int
 
-	// FIX: traffic stats با mutex جداگانه — از deadlock با Status جلوگیری میکنه
 	statsMu      sync.Mutex
 	lastSent     uint64
 	lastRecv     uint64
@@ -155,14 +154,57 @@ func TestLatency() C.int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Use standard latency endpoint as per v0.6.0 requirements
 	conn, err := sess.DialTunnel(ctx, "www.google.com:80")
 	if err != nil {
 		return -1
 	}
 	defer conn.Close()
 
-	// Minimal HTTP request to ensure path is fully functional
+	_, _ = conn.Write([]byte("GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n"))
+	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _ = conn.Read(buf)
+
+	return C.int(time.Since(start).Milliseconds())
+}
+
+//export TestConfigLatency
+func TestConfigLatency(configStr *C.char) C.int {
+	cfg, err := parseConfig(C.GoString(configStr))
+	if err != nil {
+		return -1
+	}
+
+	logger, _ := utils.NewLogger(false)
+	uuidBytes, _ := cfg.UUIDBytes()
+
+	c := transport.NewClient(transport.ClientConfig{
+		ServerAddr: cfg.ServerAddr(),
+		Mode:       intelligence.ModeFromString(cfg.Mode),
+		ObfsName:   cfg.Obfs,
+		ObfsConfig: session.ObfsConfigForName(cfg.Obfs),
+		Insecure:   cfg.Insecure,
+		Logger:     logger,
+		UUID:       uuidBytes,
+	})
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	sess, err := c.Connect(ctx)
+	if err != nil {
+		return -1
+	}
+	defer sess.Close()
+
+	conn, err := sess.DialTunnel(ctx, "www.google.com:80")
+	if err != nil {
+		return -1
+	}
+	defer conn.Close()
+
 	_, _ = conn.Write([]byte("GET /generate_204 HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n"))
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))

@@ -6,7 +6,7 @@
 
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
 
-- **Version:** `v0.6.0`
+- **Version:** `v0.6.1`
 - **License:** `MPL-2.0`
 
 ---
