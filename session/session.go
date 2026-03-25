@@ -10,6 +10,7 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -115,6 +116,7 @@ type Session struct {
 
 	// Control stream (stream 0): carries non-data frames
 	ctrlStream quic.Stream
+	ctrlReader *bufio.Reader
 
 	// Intelligence and obfuscation
 	engine *intelligence.Engine
@@ -237,6 +239,7 @@ func (s *Session) PerformHandshakeAsClient() error {
 		return fmt.Errorf("open control stream: %w", err)
 	}
 	s.ctrlStream = ctrlStream
+	s.ctrlReader = bufio.NewReader(ctrlStream)
 
 	// --- H3/MASQUE/WebTransport Protocol Wrapper ---
 	if s.requestedObfs == 4 || s.requestedObfs == 5 {
@@ -255,8 +258,12 @@ func (s *Session) PerformHandshakeAsClient() error {
 			}
 		}
 		// 3. Receive/Skip Server H3 response
-		_, _, _ = frames.ReadH3Frame(ctrlStream) // Settings
-		_, _, _ = frames.ReadH3Frame(ctrlStream) // 200 OK
+		if err := frames.DiscardH3Frame(s.ctrlReader); err != nil {
+			return fmt.Errorf("h3 settings response: %w", err)
+		}
+		if err := frames.DiscardH3Frame(s.ctrlReader); err != nil {
+			return fmt.Errorf("h3 headers response: %w", err)
+		}
 	}
 
 	priv, pub, err := hvcrypto.GenerateKeyPair()
@@ -283,11 +290,11 @@ func (s *Session) PerformHandshakeAsClient() error {
 		return fmt.Errorf("send client hello: %w", err)
 	}
 
-	respFrame, err := frames.Decode(ctrlStream)
+	helloFrame, err = frames.Decode(s.ctrlReader)
 	if err != nil {
 		return fmt.Errorf("recv server hello frame: %w", err)
 	}
-	serverHello, err := frames.DecodeServerHello(respFrame.Payload)
+	serverHello, err := frames.DecodeServerHello(helloFrame.Payload)
 	if err != nil {
 		return fmt.Errorf("decode server hello: %w", err)
 	}
@@ -326,8 +333,30 @@ func (s *Session) PerformHandshakeAsServer() error {
 		return fmt.Errorf("accept control stream: %w", err)
 	}
 	s.ctrlStream = ctrlStream
+	s.ctrlReader = bufio.NewReader(ctrlStream)
 
-	helloFrame, err := frames.Decode(ctrlStream)
+	// Peeking at the first byte of control stream to detect H3 framing.
+	// Standard HiVoid starts with 0x02 (FrameControl).
+	// H3 starts with 0x04 (H3FrameSettings).
+	first, _ := s.ctrlReader.Peek(1)
+	if len(first) > 0 && first[0] == byte(frames.H3FrameSettings) {
+		// 1. Consume H3 Settings and Request (CONNECT / WebTransport)
+		if err := frames.DiscardH3Frame(s.ctrlReader); err != nil {
+			return fmt.Errorf("read client h3 settings: %w", err)
+		}
+		if err := frames.DiscardH3Frame(s.ctrlReader); err != nil {
+			return fmt.Errorf("read client h3 headers: %w", err)
+		}
+		// 2. Send H3 Response (Settings + 200 OK)
+		if _, err := ctrlStream.Write(frames.EncodeH3Settings()); err != nil {
+			return fmt.Errorf("h3 settings server response: %w", err)
+		}
+		if _, err := ctrlStream.Write(frames.EncodeMasqueResponse()); err != nil {
+			return fmt.Errorf("h3 headers server response: %w", err)
+		}
+	}
+
+	helloFrame, err := frames.Decode(s.ctrlReader)
 	if err != nil {
 		return fmt.Errorf("recv client hello frame: %w", err)
 	}
@@ -336,16 +365,7 @@ func (s *Session) PerformHandshakeAsServer() error {
 		return fmt.Errorf("decode client hello: %w", err)
 	}
 
-	// --- H3/MASQUE/WebTransport Handshake ---
-	if clientHello.Obfs == 4 || clientHello.Obfs == 5 {
-		// Respond with H3 Settings and 200 OK
-		if _, err := ctrlStream.Write(frames.EncodeH3Settings()); err != nil {
-			return fmt.Errorf("h3 settings response: %w", err)
-		}
-		if _, err := ctrlStream.Write(frames.EncodeMasqueResponse()); err != nil {
-			return fmt.Errorf("h3 headers response: %w", err)
-		}
-	}
+	// Remove old server-side H3 logic as it's now handled by detection
 
 	s.salt = make([]byte, 32)
 	copy(s.salt, clientHello.SessionSalt[:])
@@ -703,10 +723,10 @@ func (s *Session) SendFrame(f *frames.Frame) error {
 }
 
 func (s *Session) RecvFrame() (*frames.Frame, error) {
-	if s.ctrlStream == nil {
-		return nil, fmt.Errorf("control stream not open")
+	if s.ctrlReader == nil {
+		return nil, fmt.Errorf("control reader not initialized")
 	}
-	return frames.Decode(s.ctrlStream)
+	return frames.Decode(s.ctrlReader)
 }
 
 func (s *Session) Close() error {

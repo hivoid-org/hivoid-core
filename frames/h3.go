@@ -172,3 +172,16 @@ func readByte(r io.Reader) (byte, error) {
 	_, err := io.ReadFull(r, b)
 	return b[0], err
 }
+
+// DiscardH3Frame reads an H3 frame header and discards its payload.
+func DiscardH3Frame(r io.Reader) error {
+	_, l, err := ReadH3Frame(r)
+	if err != nil {
+		return err
+	}
+	if l > 0 {
+		_, err = io.CopyN(io.Discard, r, int64(l))
+		return err
+	}
+	return nil
+}
