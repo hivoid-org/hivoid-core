@@ -20,6 +20,9 @@ var validObfs = map[string]bool{
 	"random": true,
 	"http":   true,
 	"tls":    true,
+	"ghost":  true,
+	"masque": true,
+	"webtransport": true,
 }
 
 // Validate returns a descriptive error for any invalid or missing field.
