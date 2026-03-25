@@ -155,6 +155,20 @@ func runStart(args []string) {
 			}
 		}()
 	}
+	
+	// Start background quota enforcement
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				srv.Manager().EnforceQuotas()
+			}
+		}
+	}()
 
 	if err := srv.ListenAndServe(ctx); err != nil {
 		logger.Error("server error", zap.Error(err))

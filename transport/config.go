@@ -47,8 +47,9 @@ func ClientTLSConfig(serverName string, insecure bool) *tls.Config {
 		InsecureSkipVerify: insecure, //nolint:gosec // controlled via CLI flag
 		// Allow 0-RTT via session tickets
 		ClientSessionCache: tls.NewLRUClientSessionCache(64),
-		// ALPN: identify HiVoid protocol
-		NextProtos: []string{"hivoid/1"},
+		// ALPN: identify as HTTP/3 or HiVoid. "h3" provides maximum stealth
+		// as it's the standard for modern web browsers and MASQUE.
+		NextProtos: []string{"h3", "hivoid/1"},
 	}
 }
 
@@ -62,7 +63,7 @@ func ServerTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"hivoid/1"},
+		NextProtos:   []string{"h3", "hivoid/1"},
 	}, nil
 }
 
@@ -71,6 +72,6 @@ func ServerTLSConfigFromCert(cert tls.Certificate) *tls.Config {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"hivoid/1"},
+		NextProtos:   []string{"h3", "hivoid/1"},
 	}
 }

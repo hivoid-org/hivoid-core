@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/obfuscation"
@@ -102,6 +103,17 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 			return nil, fmt.Errorf("requested policy does not match user configuration")
 		}
 		s.ApplyRuntime(p.Mode, p.ObfsConfig)
+
+		// Enforce initial quota check
+		now := time.Now().Unix()
+		if p.ExpireAtUnix > 0 && now > p.ExpireAtUnix {
+			_ = s.CloseWithError(0x10, "account expired")
+			return nil, fmt.Errorf("account expired")
+		}
+		if p.BandwidthLimit > 0 && p.BytesIn+p.BytesOut >= uint64(p.BandwidthLimit) {
+			_ = s.CloseWithError(0x10, "data limit reached")
+			return nil, fmt.Errorf("data limit reached")
+		}
 	}
 
 	m.register(s)
@@ -267,6 +279,56 @@ func (m *Manager) RefreshActiveSessionPolicies() {
 	}
 }
 
+// EnforceQuotas disconnects sessions that have exceeded their time or volume limits.
+func (m *Manager) EnforceQuotas() {
+	m.mu.RLock()
+	// 1. Snapshot policies and sessions
+	policies := make(map[[16]byte]UserPolicy, len(m.userPolicies))
+	for k, v := range m.userPolicies {
+		policies[k] = v
+	}
+	m.mu.RUnlock()
+
+	m.mu.Lock()
+	activeSessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		activeSessions = append(activeSessions, s)
+	}
+	m.mu.Unlock()
+
+	// 2. Aggregate current usage per user
+	liveUsage := make(map[[16]byte]uint64)
+	for _, s := range activeSessions {
+		liveUsage[s.ClientUUID()] += s.TrafficSent.Load() + s.TrafficRecv.Load()
+	}
+
+	// 3. Check and disconnect
+	now := time.Now().Unix()
+	for _, s := range activeSessions {
+		uuid := s.ClientUUID()
+		p, ok := policies[uuid]
+		if !ok || !p.Enabled {
+			continue
+		}
+
+		// Time check
+		if p.ExpireAtUnix > 0 && now > p.ExpireAtUnix {
+			m.logger.Info("disconnecting expired user", zap.String("email", p.Email), zap.String("uuid", hex.EncodeToString(uuid[:])))
+			_ = s.CloseWithError(0x10, "account expired")
+			continue
+		}
+
+		// Volume check
+		if p.BandwidthLimit > 0 {
+			total := p.BytesIn + p.BytesOut + liveUsage[uuid]
+			if total >= uint64(p.BandwidthLimit) {
+				m.logger.Info("disconnecting user: quota reached", zap.String("email", p.Email), zap.Uint64("limit", uint64(p.BandwidthLimit)))
+				_ = s.CloseWithError(0x10, "data limit reached")
+			}
+		}
+	}
+}
+
 // ObfsConfigForName maps a config string to concrete obfuscation parameters.
 func ObfsConfigForName(name string) obfuscation.Config {
 	cfg := obfuscation.DefaultConfig()
@@ -286,7 +348,25 @@ func ObfsConfigForName(name string) obfuscation.Config {
 		cfg.PaddingPct = 0.7
 		cfg.MaxPaddingBytes = 512
 		cfg.MaxJitterMs = 15
-		cfg.BurstBytesMax = 40 * 1024
+		cfg.BurstBytesMax = 64 * 1024
+	case "masque":
+		cfg.Enabled = true
+		cfg.PaddingPct = 0.8
+		cfg.MaxPaddingBytes = 1024
+		cfg.MaxJitterMs = 20
+		cfg.BurstBytesMax = 128 * 1024
+	case "webtransport":
+		cfg.Enabled = true
+		cfg.PaddingPct = 0.9
+		cfg.MaxPaddingBytes = 1280
+		cfg.MaxJitterMs = 30
+		cfg.BurstBytesMax = 256 * 1024
+	case "ghost":
+		cfg.Enabled = true
+		cfg.PaddingPct = 1.0
+		cfg.MaxPaddingBytes = 1024
+		cfg.MaxJitterMs = 0
+		cfg.BurstBytesMax = 0
 	default:
 		cfg.Enabled = false
 	}
@@ -304,6 +384,15 @@ func ObfsConfigToName(cfg obfuscation.Config) string {
 	if cfg.PaddingPct == 0.7 && cfg.MaxPaddingBytes == 512 {
 		return "tls"
 	}
+	if cfg.PaddingPct == 0.8 && cfg.MaxPaddingBytes == 1024 {
+		return "masque"
+	}
+	if cfg.PaddingPct == 0.9 && cfg.MaxPaddingBytes == 1280 {
+		return "webtransport"
+	}
+	if cfg.PaddingPct == 1.0 && cfg.MaxJitterMs == 0 {
+		return "ghost"
+	}
 	return "random"
 }
 
@@ -316,6 +405,12 @@ func ObfsNameToID(name string) uint8 {
 		return 2
 	case "tls":
 		return 3
+	case "masque":
+		return 4
+	case "webtransport":
+		return 5
+	case "ghost":
+		return 6
 	default:
 		return 0 // "none" or empty
 	}

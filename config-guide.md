@@ -52,12 +52,18 @@ Accepted values (case-insensitive):
 - `random`
 - `http`
 - `tls`
+- `masque`
+- `webtransport`
+- `ghost`
 
 Runtime profile intent:
 - `none`: no obfuscation
 - `random`: generic randomized padding/jitter
 - `http`: HTTP-like shaping profile
-- `tls`: more aggressive TLS-like shaping profile
+- `tls`: aggressive TLS-like shaping profile
+- `masque`: RFC 9298 compliant H3 proxying (CONNECT-UDP)
+- `webtransport`: H3 WebTransport interactive data profile (high-padding)
+- `ghost`: Constant Bitrate (CBR) noise engine for perfect statistical stealth
 
 Unknown values are rejected at validation time.
 
@@ -179,9 +185,9 @@ Each `users[]` entry supports:
 - `bandwidth_limit`  
   Per-user shared **bandwidth speed** limit in **KB/s** (`0` = unlimited).
 - `data_limit`  
-  Per-user total **traffic volume** quota in **Bytes** (`0` = unlimited).
+  Per-user total **traffic volume** quota in **Bytes** (`0` = unlimited). Reaching this limit triggers **immediate disconnection** (Active Quota Enforcement).
 - `expire_at`  
-  RFC3339 timestamp. Empty string means no expiration.
+  RFC3339 timestamp. If `features.disconnect_expired` is enabled, reaching this time triggers **immediate session termination**.
 - `bytes_in`, `bytes_out`  
   Usage counters (download/upload). Can seed counters at startup.
 - `mode`, `obfs`  
@@ -422,6 +428,18 @@ Validation failures reject startup or reload.
       "bytes_out": 0,
       "mode": "stealth",
       "obfs": "tls"
+    },
+    {
+      "uuid": "55555555-5555-5555-5555-555555555555",
+      "email": "ghost@example.com",
+      "enabled": true,
+      "max_connections": 1,
+      "bandwidth_limit": 0,
+      "expire_at": "",
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "mode": "stealth",
+      "obfs": "ghost"
     }
   ]
 }

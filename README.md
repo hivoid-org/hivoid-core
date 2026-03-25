@@ -6,22 +6,25 @@
 
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
 
-- **Version:** `v0.6.1`
+- **Version:** `v0.7.0`
 - **License:** `MPL-2.0`
 
 ---
 
+## Documentation
+
+- [Configuration Guide](config-guide.md) — Detailed reference for server and client setup.
+
 ## Key Features
 
-- High-performance architecture
-- Real-time session management
-- UUID-based authentication
-- TLS support
-- Traffic Quota & Volume Control (Data limits)
-- User Expiration Management (Auto-disconnect)
-- Concurrency Limiting (Max connections per user)
-- Dynamic configuration & Hot reload
-- Structured logging & Performance tracking
+- **Next-Gen Obfuscation Suite**: Full support for MASQUE (RFC 9298), WebTransport, and Ghost (CBR/Noise) modes.
+- **Statistical Stealth (Ghost Mode)**: Constant Bitrate engine with perfect entropy and packet normalization (1024b) to defeat statistical DPI.
+- **HTTP/3 Protocol Masquerading**: Protocol-level ALPN `h3` stealth and custom H3 framing for 1:1 signature matching.
+- **Active Quota & Usage Enforcement**: Real-time automatic disconnection for expired sessions (Data/Volume or Time/Duration limits).
+- **High-Performance Architecture**: Scalable, authenticated QUIC-based tunneling.
+- **UUID-based Security**: Cryptographically strong session isolation and access control.
+- **Dynamic Configuration**: Hot reloading of server policies and user settings.
+- **FFI Integration**: Comprehensive bindings for mobile and desktop platform development.
 
 ---
 

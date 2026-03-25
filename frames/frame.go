@@ -39,6 +39,9 @@ const (
 	// FrameProxy carries proxy tunnel negotiation (ProxyRequest / ProxyResponse).
 	// The first frame on any tunnel stream must be FrameProxy.
 	FrameProxy FrameType = 0x08
+	// FrameNoise carries Ghost-mode dummy payload (cryptographic noise).
+	// Receivers MUST silently discard FrameNoise after decryption.
+	FrameNoise FrameType = 0x09
 )
 
 // FrameFlag bitfield for frame metadata.
