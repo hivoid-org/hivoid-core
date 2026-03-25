@@ -17,6 +17,7 @@ panel/
 beta*.md
 hivoid-*
 github.py
+check.py
 Makefile
 
 dist/andorid/

@@ -93,11 +93,8 @@ func GetSOCKSPort() C.int { return C.int(1080) }
 //export GetDNSPort
 func GetDNSPort() C.int { return C.int(10853) }
 
-// FIX: statsMu جداگانه — دیگه با mu/Status deadlock نمیکنه
-//
 //export GetTrafficStats
 func GetTrafficStats() *C.char {
-	// session رو زیر mu بگیر اما سریع آزاد کن
 	mu.Lock()
 	sess := currentSess
 	mu.Unlock()
@@ -344,7 +341,6 @@ func parseConfig(s string) (*config.Config, error) {
 	if cfg.SocksPort == 0 { cfg.SocksPort = 1080 }
 	if cfg.DNSUpstream == "" { cfg.DNSUpstream = "8.8.8.8:53" }
 	if cfg.Name == "" { cfg.Name = "hivoid" }
-	// FIX: default dns_port که قبلاً حذف شده بود
 	if cfg.DNSPort == 0 { cfg.DNSPort = 10853 }
 	if err := cfg.Validate(); err != nil {
 		return nil, err

@@ -1,14 +1,7 @@
-// Package session — Ghost Constant Bitrate (CBR) Engine.
-//
-// The Ghost engine generates a perfectly uniform traffic signature by:
-//   1. Normalizing all transmitted frames to a fixed size (GhostFrameSize bytes)
-//   2. Transmitting at a fixed interval (GhostTickInterval), injecting FrameNoise
-//      when no real data is available
-//   3. Silently discarding received FrameNoise on the remote side
-//
-// From the perspective of a DPI observer, the tunnel appears as a constant
-// stream of identically-sized, evenly-spaced encrypted UDP packets — providing
-// no statistical signal to distinguish it from background noise.
+// Package session implements the Ghost Constant Bitrate (CBR) Engine.
+// Ghost achieves statistical undetectability by enforcing an isochronous
+// transmission schedule with fixed-size frames, masking application
+// traffic patterns from DPI/statistical analysis.
 package session
 
 import (
@@ -22,24 +15,27 @@ import (
 )
 
 const (
-	// GhostFrameSize is the exact payload size for every Ghost-mode frame.
-	// Chosen to fit within a single QUIC packet after headers/encryption overhead.
+	// GhostFrameSize is the MTU-optimized payload size for all frames.
 	GhostFrameSize = 1024
 
-	// GhostTickInterval is the fixed interval between consecutive packets.
-	// 40ms = 25 packets/sec ≈ 25 KB/s idle bandwidth.
+	// GhostTickInterval defines the transmission frequency (25 PPS).
 	GhostTickInterval = 40 * time.Millisecond
+
+	// GhostMaxQueueSize bounds memory usage under congestion.
+	GhostMaxQueueSize = 2048
 )
 
-// ghostEngine manages the isochronous (constant bitrate) traffic loop.
+// ghostEngine manages the isochronous traffic loop.
 type ghostEngine struct {
 	sess   *Session
 	mu     sync.Mutex
-	queue  [][]byte      // buffered real data chunks ready to send
+	queue  [][]byte      // Pending normalized data chunks
 	stopCh chan struct{}
+	
+	stream quic.Stream   // Persistent stream to minimize DPI fingerprinting
 }
 
-// newGhostEngine creates but does not start the CBR engine.
+// newGhostEngine initializes the CBR engine for the given session.
 func newGhostEngine(s *Session) *ghostEngine {
 	return &ghostEngine{
 		sess:   s,
@@ -48,19 +44,21 @@ func newGhostEngine(s *Session) *ghostEngine {
 	}
 }
 
-// Enqueue buffers a real data chunk for transmission at the next tick.
-// Data larger than GhostFrameSize is chunked automatically.
+// Enqueue fragments and normalizes data for isochronous transmission.
 func (g *ghostEngine) Enqueue(data []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Chunk data into GhostFrameSize-sized pieces
 	for len(data) > 0 {
+		if len(g.queue) >= GhostMaxQueueSize {
+			break // Congestion control: drop oldest/overflow
+		}
+
 		chunk := data
 		if len(chunk) > GhostFrameSize {
 			chunk = data[:GhostFrameSize]
 		}
-		// Normalize to exact size: pad if shorter
+		
 		normalized := make([]byte, GhostFrameSize)
 		copy(normalized, chunk)
 		if len(chunk) < GhostFrameSize {
@@ -72,8 +70,7 @@ func (g *ghostEngine) Enqueue(data []byte) {
 	}
 }
 
-// Run starts the isochronous transmission loop.
-// It MUST be launched as a goroutine: go engine.Run()
+// Run executes the transmission loop. Must be called as a goroutine.
 func (g *ghostEngine) Run() {
 	ticker := time.NewTicker(GhostTickInterval)
 	defer ticker.Stop()
@@ -90,7 +87,7 @@ func (g *ghostEngine) Run() {
 	}
 }
 
-// Stop terminates the CBR loop.
+// Stop terminates the CBR loop safely.
 func (g *ghostEngine) Stop() {
 	select {
 	case <-g.stopCh:
@@ -99,9 +96,7 @@ func (g *ghostEngine) Stop() {
 	}
 }
 
-// tick sends exactly one frame per interval:
-// - A real data frame if the queue has data
-// - A FrameNoise frame otherwise
+// tick transmits exactly one frame (real data or noise).
 func (g *ghostEngine) tick() {
 	g.mu.Lock()
 	var payload []byte
@@ -117,10 +112,13 @@ func (g *ghostEngine) tick() {
 	}
 	g.mu.Unlock()
 
-	// Open a stream and send the frame
-	stream, err := g.sess.conn.OpenStreamSync(g.sess.ctx)
-	if err != nil {
-		return // connection is closing
+	// Maintain persistent stream to avoid per-packet connection overhead
+	if g.stream == nil {
+		stream, err := g.sess.conn.OpenStreamSync(g.sess.ctx)
+		if err != nil {
+			return 
+		}
+		g.stream = stream
 	}
 
 	var f *frames.Frame
@@ -134,22 +132,29 @@ func (g *ghostEngine) tick() {
 		f = frames.NewDataFrame(payload, true)
 	}
 
-	_, _ = f.WriteTo(stream)
-	_ = stream.Close()
+	_, err := f.WriteTo(g.stream)
+	if err != nil {
+		g.stream.Close()
+		g.stream = nil
+	}
 
 	// Update traffic counters (even noise counts to maintain accurate stats)
 	g.sess.TrafficSent.Add(uint64(len(payload)))
 }
 
-// isGhostNoise checks if an incoming stream carries a noise frame that should be
-// silently discarded. Used by the session receiver to filter Ghost chaff.
+// isGhostNoise identifies and discards chaff frames at the receiver.
 func isGhostNoise(stream quic.Stream) bool {
-	// Peek at the frame type byte without consuming the stream.
-	// Frame header: [Type(1)] [Flags(1)] [Length(4)] [Payload...]
+	// Peek type byte without consuming full payload
 	header := make([]byte, 1)
 	_, err := io.ReadFull(stream, header)
 	if err != nil {
+		stream.Close()
 		return false
 	}
-	return frames.FrameType(header[0]) == frames.FrameNoise
+	
+	isNoise := frames.FrameType(header[0]) == frames.FrameNoise
+	if isNoise {
+		stream.Close()
+	}
+	return isNoise
 }
