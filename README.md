@@ -1,7 +1,7 @@
 # Hi Void
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/hivoid-org/hivoid-core/refs/heads/main/logo/hi-logo-black-transparent.png" alt="Hi Void Logo" width="200" />
+  <img src="https://raw.githubusercontent.com/hivoid-org/hivoid-core/refs/heads/main/logo/hi-logo-white-transparent.png" alt="Hi Void Logo" width="200" />
 </p>
 
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
