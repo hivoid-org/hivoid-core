@@ -85,20 +85,23 @@ func (p *SessionPool) DialTunnel(ctx context.Context, target string, isUDP bool)
 	for i := 0; i < p.size; i++ {
 		idx := (startIdx + uint64(i)) % uint64(p.size)
 		sess := p.sessions[idx]
-		if sess != nil {
-			var conn net.Conn
-			var err error
-			if isUDP {
-				conn, err = sess.DialUDPTunnel(ctx, target)
-			} else {
-				conn, err = sess.DialTunnel(ctx, target)
-			}
-			if err == nil {
-				return conn, nil
-			}
-			// If error is network related, maybe log, but continue to next
-			p.logger.Debug("pool: session OpenTunnel failed", zap.Uint64("slot", idx), zap.Error(err))
+		
+		// Skip nil or dead sessions immediately
+		if sess == nil || sess.Connection().Context().Err() != nil {
+			continue
 		}
+
+		var conn net.Conn
+		var err error
+		if isUDP {
+			conn, err = sess.DialUDPTunnel(ctx, target)
+		} else {
+			conn, err = sess.DialTunnel(ctx, target)
+		}
+		if err == nil {
+			return conn, nil
+		}
+		p.logger.Debug("pool: session OpenTunnel failed", zap.Uint64("slot", idx), zap.Error(err))
 	}
 
 	return nil, fmt.Errorf("no healthy session in pool to handle request")
@@ -106,7 +109,7 @@ func (p *SessionPool) DialTunnel(ctx context.Context, target string, isUDP bool)
 
 // keepaliveLoop periodically checks session health and reconnects dropped ones.
 func (p *SessionPool) keepaliveLoop() {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(1 * time.Second) // Check more frequently
 	defer ticker.Stop()
 
 	for {
@@ -115,27 +118,61 @@ func (p *SessionPool) keepaliveLoop() {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		p.mu.Lock()
+		// 1. Identify dead slots
+		var deadSlots []int
+		p.mu.RLock()
 		for i := 0; i < p.size; i++ {
 			sess := p.sessions[i]
-			// Check if session is nil or underlying connection is dead
-			// since quic-go context is cancelled when connection drops.
 			if sess == nil || sess.Connection().Context().Err() != nil {
-				// Slot is dead. Reconnect.
+				deadSlots = append(deadSlots, i)
+			}
+		}
+		p.mu.RUnlock()
+
+		if len(deadSlots) == 0 {
+			continue
+		}
+
+		// 2. Reconnect dead slots in parallel without holding the lock
+		var wg sync.WaitGroup
+		for _, slot := range deadSlots {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				
 				p.logger.Info("pool: reconnecting dropped session", zap.Int("slot", i))
-				newSess, err := p.dialer.Connect(ctx)
+				
+				// Use a longer timeout for network dial
+				dialCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				
+				newSess, err := p.dialer.Connect(dialCtx)
+				
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				
+				// Re-verify if the pool was closed during dial
+				if atomic.LoadInt32(&p.closed) == 1 {
+					if newSess != nil {
+						newSess.Close()
+					}
+					return
+				}
+
 				if err != nil {
 					p.logger.Warn("pool: reconnect failed", zap.Int("slot", i), zap.Error(err))
+					// Keep it nil so it gets retried in the next tick
 					p.sessions[i] = nil
 				} else {
 					p.logger.Info("pool: session re-established", zap.Int("slot", i))
 					p.sessions[i] = newSess
 				}
-			}
+			}(slot)
 		}
-		p.mu.Unlock()
-		cancel()
+		// We don't block the loop here, we let it continue to next tick if needed,
+		// but we wait for this batch to finish to avoid spawning too many dials
+		// if the network is really slow.
+		wg.Wait()
 	}
 }
 
