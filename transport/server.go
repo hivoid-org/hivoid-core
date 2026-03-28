@@ -116,10 +116,11 @@ func NewServer(cfg ServerConfig) *Server {
 		mgr.SetAllowedUUIDs(cfg.AllowedUUIDs)
 	}
 	return &Server{
-		listenAddr: cfg.ListenAddr,
-		certFile:   cfg.CertFile,
-		keyFile:    cfg.KeyFile,
-		mode:       cfg.Mode,
+		listenAddr:   cfg.ListenAddr,
+		certFile:     cfg.CertFile,
+		keyFile:      cfg.KeyFile,
+		mode:         cfg.Mode,
+		logger:       logger,
 		manager:      mgr,
 		handler:      cfg.Handler,
 		listeners:    make(map[string]*quic.Listener),
@@ -304,6 +305,11 @@ func (srv *Server) ReloadConfig(cfg ServerConfig) error {
 	srv.listenAddr = cfg.ListenAddr
 	srv.certFile = cfg.CertFile
 	srv.keyFile = cfg.KeyFile
+	srv.antiProbe = cfg.AntiProbe
+	srv.fallbackAddr = cfg.FallbackAddr
+	if cfg.Logger != nil {
+		srv.logger = cfg.Logger
+	}
 	return nil
 }
 
