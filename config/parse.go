@@ -52,7 +52,26 @@ func ParseURI(raw string) (*Config, error) {
 		DNSUpstream: q.Get("dns-up"),
 		CertPin:     q.Get("cert-pin"),
 		Insecure:    q.Get("insecure") == "true",
+		GeoIPPath:   q.Get("geoip-path"),
+		GeoSitePath: q.Get("geosite-path"),
 		Name:        u.Fragment,
+	}
+
+	if bd := q.Get("bypass-domains"); bd != "" {
+		cfg.BypassDomains = strings.Split(bd, ",")
+	}
+	if bi := q.Get("bypass-ips"); bi != "" {
+		cfg.BypassIPs = strings.Split(bi, ",")
+	}
+	if dr := q.Get("direct-route"); dr != "" {
+		cfg.DirectRoute = strings.Split(dr, ",")
+	}
+
+	if ps := q.Get("pool-size"); ps != "" {
+		v, err := strconv.Atoi(ps)
+		if err == nil && v > 0 {
+			cfg.PoolSize = v
+		}
 	}
 
 	if sp := q.Get("socks-port"); sp != "" {

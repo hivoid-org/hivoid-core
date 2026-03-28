@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -23,6 +24,8 @@ type UserPolicy struct {
 	Mode           intelligence.Mode
 	ObfsConfig     obfuscation.Config
 	MaxConnections int
+	MaxIPs         int
+	BindIP         string
 	BandwidthLimit int64
 	ExpireAtUnix   int64
 	BytesIn        uint64
@@ -50,12 +53,15 @@ type Manager struct {
 	allowedUUIDs [][16]byte
 	// userPolicies are applied after handshake based on client UUID.
 	userPolicies map[[16]byte]UserPolicy
+	// userIPs tracks unique IPs per user: map[UUID] -> map[IP] -> SessionCount
+	userIPs map[[16]byte]map[string]int
 }
 
 // NewManager creates a Manager.
 func NewManager(isClient bool, mode intelligence.Mode, logger *zap.Logger) *Manager {
 	return &Manager{
 		sessions: make(map[ID]*Session),
+		userIPs:  make(map[[16]byte]map[string]int),
 		logger:   logger,
 		mode:     mode,
 		obfsCfg:  obfuscation.DefaultConfig(),
@@ -65,7 +71,7 @@ func NewManager(isClient bool, mode intelligence.Mode, logger *zap.Logger) *Mana
 
 // AcceptAndHandshake wraps a newly accepted QUIC connection into a Session,
 // performs the server-side handshake, and registers it.
-func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) (*Session, error) {
+func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Session, error) {
 	m.mu.RLock()
 	cfg := DefaultConfig(m.isClient)
 	cfg.Engine = intelligence.NewEngine(m.mode)
@@ -87,7 +93,12 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 		return nil, fmt.Errorf("server handshake: %w", err)
 	}
 
-	if p, ok := policies[s.ClientUUID()]; ok && p.Enabled {
+	if p, ok := policies[s.ClientUUID()]; ok {
+		if !p.Enabled {
+			_ = s.CloseWithError(0x11, "user disabled")
+			return nil, fmt.Errorf("user disabled")
+		}
+
 		// Enforce policy: client must request the settings defined by the admin
 		requestedMode, requestedObfs := s.ClientRequestedPolicy()
 		if uint8(p.Mode) != requestedMode || ObfsNameToID(ObfsConfigToName(p.ObfsConfig)) != requestedObfs {
@@ -114,6 +125,26 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 			_ = s.CloseWithError(0x10, "data limit reached")
 			return nil, fmt.Errorf("data limit reached")
 		}
+
+		// Enforce IP limit
+		if p.MaxIPs > 0 {
+			ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+			m.mu.Lock()
+			currentIPs := m.userIPs[s.ClientUUID()]
+			_, alreadyKnown := currentIPs[ip]
+			if !alreadyKnown && len(currentIPs) >= p.MaxIPs {
+				m.mu.Unlock()
+				clientUUID := s.ClientUUID()
+				m.logger.Warn("IP limit reached",
+					zap.String("uuid", hex.EncodeToString(clientUUID[:])),
+					zap.String("new_ip", ip),
+					zap.Int("limit", p.MaxIPs),
+				)
+				_ = s.CloseWithError(0x11, "IP limit reached")
+				return nil, fmt.Errorf("IP limit reached")
+			}
+			m.mu.Unlock()
+		}
 	}
 
 	m.register(s)
@@ -129,7 +160,7 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn quic.Connection) 
 }
 
 // Dial creates a new client-side session over an established QUIC connection.
-func (m *Manager) Dial(ctx context.Context, conn quic.Connection) (*Session, error) {
+func (m *Manager) Dial(ctx context.Context, conn *quic.Conn) (*Session, error) {
 	cfg := DefaultConfig(m.isClient)
 	cfg.Engine = intelligence.NewEngine(m.mode)
 	cfg.ObfsConfig = m.obfsCfg
@@ -175,6 +206,18 @@ func (m *Manager) Remove(id ID) {
 	s, ok := m.sessions[id]
 	if ok {
 		delete(m.sessions, id)
+		// Update IP tracking
+		ip, _, _ := net.SplitHostPort(s.Connection().RemoteAddr().String())
+		uuid := s.ClientUUID()
+		if m.userIPs[uuid] != nil {
+			m.userIPs[uuid][ip]--
+			if m.userIPs[uuid][ip] <= 0 {
+				delete(m.userIPs[uuid], ip)
+				if len(m.userIPs[uuid]) == 0 {
+					delete(m.userIPs, uuid)
+				}
+			}
+		}
 	}
 	m.mu.Unlock()
 
@@ -271,7 +314,13 @@ func (m *Manager) RefreshActiveSessionPolicies() {
 	m.mu.RUnlock()
 
 	for _, s := range sessions {
-		if p, ok := policies[s.ClientUUID()]; ok && p.Enabled {
+		uuid := s.ClientUUID()
+		if p, ok := policies[uuid]; ok {
+			if !p.Enabled {
+				m.logger.Info("disconnecting disabled user during refresh", zap.String("uuid", hex.EncodeToString(uuid[:])))
+				_ = s.CloseWithError(0x11, "user disabled")
+				continue
+			}
 			s.ApplyRuntime(p.Mode, p.ObfsConfig)
 			continue
 		}
@@ -279,7 +328,6 @@ func (m *Manager) RefreshActiveSessionPolicies() {
 	}
 }
 
-// EnforceQuotas disconnects sessions that have exceeded their time or volume limits.
 func (m *Manager) EnforceQuotas() {
 	m.mu.RLock()
 	// 1. Snapshot policies and sessions
@@ -287,6 +335,7 @@ func (m *Manager) EnforceQuotas() {
 	for k, v := range m.userPolicies {
 		policies[k] = v
 	}
+	allowedUUIDs := m.allowedUUIDs
 	m.mu.RUnlock()
 
 	m.mu.Lock()
@@ -307,7 +356,31 @@ func (m *Manager) EnforceQuotas() {
 	for _, s := range activeSessions {
 		uuid := s.ClientUUID()
 		p, ok := policies[uuid]
-		if !ok || !p.Enabled {
+
+		// Disconnect if user is disabled
+		if ok && !p.Enabled {
+			m.logger.Info("disconnecting disabled user", zap.String("email", p.Email), zap.String("uuid", hex.EncodeToString(uuid[:])))
+			_ = s.CloseWithError(0x11, "user disabled")
+			continue
+		}
+
+		// Disconnect if user was removed from policy (if server has allowlist enabled)
+		if !ok && len(allowedUUIDs) > 0 {
+			found := false
+			for _, au := range allowedUUIDs {
+				if au == uuid {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.logger.Info("disconnecting unauthorized user", zap.String("uuid", hex.EncodeToString(uuid[:])))
+				_ = s.CloseWithError(0x11, "unauthorized uuid")
+				continue
+			}
+		}
+
+		if !ok {
 			continue
 		}
 
@@ -430,4 +503,12 @@ func (m *Manager) register(s *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessions[s.id] = s
+
+	// Update IP tracking
+	ip, _, _ := net.SplitHostPort(s.Connection().RemoteAddr().String())
+	uuid := s.ClientUUID()
+	if m.userIPs[uuid] == nil {
+		m.userIPs[uuid] = make(map[string]int)
+	}
+	m.userIPs[uuid][ip]++
 }

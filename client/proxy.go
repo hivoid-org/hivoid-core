@@ -39,6 +39,10 @@ type ProxyConfig struct {
 	EnableHTTP bool
 	// Logger is an optional structured logger.
 	Logger *zap.Logger
+	// BypassDomains is a list of domain suffix matches (e.g. ".ir", "localhost") to route directly.
+	BypassDomains []string
+	// BypassIPs is a list of parsed CIDR networks to route directly.
+	BypassIPs []*net.IPNet
 }
 
 // DefaultProxyConfig returns sensible defaults.
@@ -55,7 +59,7 @@ func DefaultProxyConfig() ProxyConfig {
 type ProxyServer struct {
 	cfg     ProxyConfig
 	logger  *zap.Logger
-	getConn func(ctx context.Context, target string) (net.Conn, error)
+	getConn func(ctx context.Context, target string, udp bool) (net.Conn, error)
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -64,8 +68,8 @@ type ProxyServer struct {
 // NewProxyServer creates a ProxyServer.
 //
 // dialFunc is called for each new proxied connection; it should forward
-// the connection through the HiVoid session (e.g., sess.DialTunnel).
-func NewProxyServer(cfg ProxyConfig, dialFunc func(ctx context.Context, target string) (net.Conn, error)) *ProxyServer {
+// the connection through the HiVoid session (e.g., sess.DialTunnel or sess.DialUDPTunnel).
+func NewProxyServer(cfg ProxyConfig, dialFunc func(ctx context.Context, target string, udp bool) (net.Conn, error)) *ProxyServer {
 	logger := cfg.Logger
 	if logger == nil {
 		logger, _ = zap.NewProduction()
@@ -75,6 +79,33 @@ func NewProxyServer(cfg ProxyConfig, dialFunc func(ctx context.Context, target s
 		logger:  logger,
 		getConn: dialFunc,
 	}
+}
+
+// shouldBypass checks if the target host matches any bypass rules (domains or IPs).
+func (p *ProxyServer) shouldBypass(target string) bool {
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		host = target
+	}
+	return HostMatchesBypass(host, p.cfg.BypassDomains, p.cfg.BypassIPs)
+}
+
+// dialTarget automatically connects over the tunnel or directly depending on bypass rules.
+func (p *ProxyServer) dialTarget(ctx context.Context, target string, udp bool) (net.Conn, error) {
+	if p.shouldBypass(target) {
+		p.logger.Debug("routing DIRECT due to bypass rule", zap.String("target", target))
+		if udp {
+			// Direct UDP socket is trickier depending on context, we fall back to generic
+			// SOCKS5 associate handling on the net.Dial string
+			// For full routing, one might use net.Dial("udp", target) though standard proxying
+			// over TCP proxy dialers works similarly.
+			return net.Dial("udp", target)
+		}
+		var d net.Dialer
+		d.Timeout = 10 * time.Second
+		return d.DialContext(ctx, "tcp", target)
+	}
+	return p.getConn(ctx, target, udp)
 }
 
 // ListenAndServe starts the proxy listener and blocks until ctx is cancelled.
@@ -145,6 +176,7 @@ func (p *ProxyServer) dispatch(ctx context.Context, conn net.Conn) {
 const (
 	socks5Version            = 0x05
 	socks5CmdConnect         = 0x01
+	socks5CmdUDPAssociate    = 0x03
 	socks5AuthNoAuth         = 0x00
 	socks5AuthNoAcceptable   = 0xFF
 	socks5AddrIPv4           = 0x01
@@ -198,7 +230,14 @@ func (p *ProxyServer) handleSOCKS5(ctx context.Context, conn net.Conn) {
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return
 	}
-	if header[0] != socks5Version || header[1] != socks5CmdConnect {
+	if header[0] != socks5Version {
+		return
+	}
+	if header[1] == socks5CmdUDPAssociate {
+		p.handleUDPAssociate(ctx, conn)
+		return
+	}
+	if header[1] != socks5CmdConnect {
 		p.socks5Reply(conn, socks5RepCmdNotSupported, "0.0.0.0", 0)
 		return
 	}
@@ -241,8 +280,8 @@ func (p *ProxyServer) handleSOCKS5(ctx context.Context, conn net.Conn) {
 
 	p.logger.Debug("SOCKS5 CONNECT", zap.String("target", target))
 
-	// Step 4: Connect through HiVoid tunnel
-	tunnelConn, err := p.getConn(ctx, target)
+	// Step 4: Connect through HiVoid tunnel or direct via bypass rules
+	tunnelConn, err := p.dialTarget(ctx, target, false)
 	if err != nil {
 		p.logger.Warn("tunnel dial failed", zap.String("target", target), zap.Error(err))
 		p.socks5Reply(conn, socks5RepHostUnreachable, "0.0.0.0", 0)
@@ -255,6 +294,128 @@ func (p *ProxyServer) handleSOCKS5(ctx context.Context, conn net.Conn) {
 
 	// Step 5: Bidirectional relay
 	relay(conn, tunnelConn)
+}
+
+func (p *ProxyServer) handleUDPAssociate(ctx context.Context, conn net.Conn) {
+	// Step 1: Start local UDP relay listener
+	relayAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		p.socks5Reply(conn, socks5RepFailure, "0.0.0.0", 0)
+		return
+	}
+	relayUDP, err := net.ListenUDP("udp", relayAddr)
+	if err != nil {
+		p.socks5Reply(conn, socks5RepFailure, "0.0.0.0", 0)
+		return
+	}
+	defer relayUDP.Close()
+
+	_, port, _ := net.SplitHostPort(relayUDP.LocalAddr().String())
+	p.logger.Debug("SOCKS5 UDP ASSOCIATE", zap.String("relay_port", port))
+
+	// Step 2: Reply to client with our relay address
+	p.socks5Reply(conn, socks5RepSuccess, "127.0.0.1", uint16(parseInt(port)))
+
+	// Step 3: Wait for client to close TCP connection or send UDP packets
+	// In SOCKS5, the UDP association stays alive as long as the TCP connection is open.
+	errChan := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := conn.Read(buf) // EOF when client closes
+		errChan <- err
+	}()
+
+	go p.relaySOCKS5UDP(ctx, relayUDP)
+
+	select {
+	case <-ctx.Done():
+	case <-errChan:
+	}
+}
+
+func (p *ProxyServer) relaySOCKS5UDP(ctx context.Context, relayUDP *net.UDPConn) {
+	buf := make([]byte, 65535)
+	tunnels := make(map[string]net.Conn)
+	defer func() {
+		for _, t := range tunnels {
+			t.Close()
+		}
+	}()
+
+	for {
+		n, srcAddr, err := relayUDP.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		if n < 6 { // [rsv:2][frag:1][atyp:1][dst...][port:2][data...]
+			continue
+		}
+
+		// Parse SOCKS5 UDP header
+		atyp := buf[3]
+		var targetHost string
+		var portOffset int
+
+		switch atyp {
+		case socks5AddrIPv4:
+			targetHost = net.IP(buf[4:8]).String()
+			portOffset = 8
+		case socks5AddrDomain:
+			dlen := int(buf[4])
+			targetHost = string(buf[5 : 5+dlen])
+			portOffset = 5 + dlen
+		case socks5AddrIPv6:
+			targetHost = net.IP(buf[4:20]).String()
+			portOffset = 20
+		default:
+			continue
+		}
+
+		targetPort := binary.BigEndian.Uint16(buf[portOffset : portOffset+2])
+		target := fmt.Sprintf("%s:%d", targetHost, targetPort)
+		data := buf[portOffset+2 : n]
+
+		// Get or create tunnel
+		tunnel, ok := tunnels[target]
+		if !ok {
+			p.logger.Debug("dialing new UDP tunnel", zap.String("target", target))
+			tunnel, err = p.dialTarget(ctx, target, true)
+			if err != nil {
+				p.logger.Warn("UDP tunnel dial failed", zap.String("target", target), zap.Error(err))
+				continue
+			}
+			tunnels[target] = tunnel
+			// Download relay
+			go func(t net.Conn, sa *net.UDPAddr, tgt string) {
+				pkt := make([]byte, 65535)
+				header := make([]byte, 2)
+				// Reconstruct SOCKS5 UDP header for response
+				// [rsv:2][frag:1][atyp:1][addr...][port:2]
+				// We'll simplify and use IPv4 0.0.0.0/0 as source in header
+				resHeader := []byte{0x00, 0x00, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0}
+				for {
+					if _, err := io.ReadFull(t, header); err != nil {
+						return
+					}
+					plen := int(header[0])<<8 | int(header[1])
+					if plen > 65535 {
+						return
+					}
+					if _, err := io.ReadFull(t, pkt[:plen]); err != nil {
+						return
+					}
+					// Send back to client
+					fullPkt := append(resHeader, pkt[:plen]...)
+					_, _ = relayUDP.WriteToUDP(fullPkt, sa)
+				}
+			}(tunnel, srcAddr, target)
+		}
+
+		// Upload relay
+		header := []byte{byte(len(data) >> 8), byte(len(data))}
+		_, _ = tunnel.Write(header)
+		_, _ = tunnel.Write(data)
+	}
 }
 
 // socks5Reply sends a SOCKS5 reply to the client.
@@ -298,7 +459,7 @@ func (p *ProxyServer) handleHTTPConnect(ctx context.Context, conn net.Conn, req 
 		target += ":443"
 	}
 
-	tunnelConn, err := p.getConn(ctx, target)
+	tunnelConn, err := p.dialTarget(ctx, target, false)
 	if err != nil {
 		fmt.Fprintf(conn, "HTTP/1.1 503 Service Unavailable\r\n\r\n")
 		return
@@ -321,7 +482,7 @@ func (p *ProxyServer) handleHTTPRequest(ctx context.Context, conn net.Conn, req 
 		host += ":80"
 	}
 
-	tunnelConn, err := p.getConn(ctx, host)
+	tunnelConn, err := p.dialTarget(ctx, host, false)
 	if err != nil {
 		fmt.Fprintf(conn, "HTTP/1.1 503 Service Unavailable\r\n\r\n")
 		return
@@ -379,8 +540,21 @@ func relay(a, b net.Conn) {
 
 // SessionDial returns a dialer function that routes connections through
 // the given HiVoid session. Used as the dialFunc parameter of NewProxyServer.
-func SessionDial(sess *session.Session) func(ctx context.Context, target string) (net.Conn, error) {
-	return func(ctx context.Context, target string) (net.Conn, error) {
+func SessionDial(sess *session.Session) func(ctx context.Context, target string, udp bool) (net.Conn, error) {
+	return func(ctx context.Context, target string, udp bool) (net.Conn, error) {
+		if udp {
+			return sess.DialUDPTunnel(ctx, target)
+		}
 		return sess.DialTunnel(ctx, target)
 	}
+}
+
+func parseInt(s string) int {
+	var n int
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
 }

@@ -45,7 +45,7 @@ var frameBufPool = sync.Pool{
 // TunnelConn wraps a QUIC bidirectional stream, exposing a net.Conn interface
 // with application-layer AEAD encryption/decryption.
 type TunnelConn struct {
-	stream quic.Stream
+	stream *quic.Stream
 	sess   *Session
 	target string
 
@@ -63,7 +63,7 @@ type TunnelConn struct {
 }
 
 // newTunnelConn constructs a TunnelConn over the given stream.
-func newTunnelConn(stream quic.Stream, sess *Session, target string) *TunnelConn {
+func newTunnelConn(stream *quic.Stream, sess *Session, target string) *TunnelConn {
 	return &TunnelConn{
 		stream: stream,
 		sess:   sess,
@@ -217,7 +217,7 @@ func (c *TunnelConn) SetWriteDeadline(t time.Time) error {
 
 // SendProxyOkToStream writes a success ProxyResponse directly to the stream.
 // This is called by the server forwarder before entering data relay mode.
-func SendProxyOkToStream(stream quic.Stream) error {
+func SendProxyOkToStream(stream *quic.Stream) error {
 	resp := frames.ProxyResponse{Success: true}
 	f := &frames.Frame{Type: frames.FrameProxy, Payload: resp.Encode()}
 	_, err := f.WriteTo(stream)
@@ -225,7 +225,7 @@ func SendProxyOkToStream(stream quic.Stream) error {
 }
 
 // SendProxyErrToStream writes a failure ProxyResponse to the stream.
-func SendProxyErrToStream(stream quic.Stream, msg string) {
+func SendProxyErrToStream(stream *quic.Stream, msg string) {
 	resp := frames.ProxyResponse{Success: false, ErrMsg: msg}
 	f := &frames.Frame{Type: frames.FrameProxy, Payload: resp.Encode()}
 	_, _ = f.WriteTo(stream)
@@ -235,7 +235,7 @@ func SendProxyErrToStream(stream quic.Stream, msg string) {
 type quicAddr struct{ net.Addr }
 
 // RawStream returns the underlying QUIC stream for low-level access by the forwarder.
-func (c *TunnelConn) RawStream() quic.Stream { return c.stream }
+func (c *TunnelConn) RawStream() *quic.Stream { return c.stream }
 
 // tunnelPayloadSize computes the binary-encoded size of a frame with given payload.
 func tunnelPayloadSize(payloadLen int) int {

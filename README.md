@@ -6,7 +6,7 @@
 
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
 
-- **Version:** `v0.7.3`
+- **Version:** `v0.8.0`
 - **License:** `MPL-2.0`
 
 ---
@@ -17,14 +17,15 @@ Hi Void is a high-performance core for secure, scalable, and efficient proxy net
 
 ## Key Features
 
-- **Next-Gen Obfuscation Suite**: Full support for MASQUE (RFC 9298), WebTransport, and Ghost (CBR/Noise) modes.
-- **Statistical Stealth (Ghost Mode)**: Constant Bitrate engine with perfect entropy and packet normalization (1024b) to defeat statistical DPI.
-- **HTTP/3 Protocol Masquerading**: Protocol-level ALPN `h3` stealth and custom H3 framing for 1:1 signature matching.
-- **Active Quota & Usage Enforcement**: Real-time automatic disconnection for expired sessions (Data/Volume or Time/Duration limits).
-- **High-Performance Architecture**: Scalable, authenticated QUIC-based tunneling.
-- **UUID-based Security**: Cryptographically strong session isolation and access control.
-- **Dynamic Configuration**: Hot reloading of server policies and user settings.
-- **FFI Integration**: Comprehensive bindings for mobile and desktop platform development.
+- **Next-Gen Obfuscation Suite**: Full support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR/Noise) modes.
+- **Statistical Stealth (Ghost Mode)**: Dynamic CBR engine with adaptive entropy and intelligent noise generation to defeat advanced scalable DPI.
+- **Anti-Probing & Tarpitting**: Immediate silent drop or TCP-like tarpitting for connections that fail strict handshake bounds; fallback redirection (`FallbackAddr`) for unauthorized active scanner probes.
+- **ISP Throttling Evasion (Connection Pooling)**: Client-side round-robin `SessionPool` dynamically spreads streams and UDP associates across independent disjoint QUIC tunnels to completely bypass single-flow speed throttling.
+- **V2Ray Geographic Bypass**: Native parsing of standard `.dat` domain and IP lists (`geoip` & `geosite`), allowing instant domestic bypass routing (out of tunnel) with intelligent latency-free DNS upstreaming.
+- **Comprehensive User Limits**: Server-side Active Quota, Date Expiry, `MaxConnections`, concurrent IP limit (`MaxIPs`), and outgoing egress interface binding (`BindIP`).
+- **UDP Relaying**: Fully compliant SOCKS5 UDP Associate natively multiplexed over QUIC streams.
+- **High-Performance Architecture**: Scalable, authenticated QUIC tunneling using concurrent connection state management.
+- **Dynamic Configuration**: Hot reloading of server listener/TLS certificates and real-time multi-policy user limits snapshotting.
 
 ---
 
@@ -127,7 +128,9 @@ Edit `server.json` based on your deployment.
       "uuid": "11111111-1111-1111-1111-111111111111",
       "email": "user1@example.com",
       "enabled": true,
-      "max_connections": 2,
+      "max_connections": 10,
+      "max_ips": 3,
+      "bind_ip": "192.168.1.50",
       "bandwidth_limit": 1024,
       "data_limit": 53687091200,
       "expire_at": "2027-01-01T00:00:00Z",
@@ -140,16 +143,19 @@ Edit `server.json` based on your deployment.
       "uuid": "22222222-2222-2222-2222-222222222222",
       "email": "vip@example.com",
       "enabled": true,
-      "max_connections": 10,
+      "max_connections": 0,
+      "max_ips": 0,
       "bandwidth_limit": 0,
       "expire_at": "",
       "bytes_in": 0,
       "bytes_out": 0,
       "mode": "HIGH_PERFORMANCE",
-      "obfs": "tls"
+      "obfs": "ghost"
     }
   ],
   "max_conns": 0,
+  "anti_probe": true,
+  "fallback_addr": "1.1.1.1:443",
   "allowed_hosts": [],
   "blocked_hosts": []
 }
@@ -164,10 +170,16 @@ Edit `server.json` based on your deployment.
   "port": 4433,
   "mode": "balanced",
   "obfs": "none",
+  "pool_size": 4,
   "socks_port": 1080,
   "dns_port": 5353,
-  "dns_upstream": "1.1.1.1:53",
+  "dns_upstream": "8.8.8.8:53",
   "insecure": true,
+  "bypass_domains": [".ir", "localhost"],
+  "bypass_ips": ["10.0.0.0/8"],
+  "geoip_path": "./geoip.dat",
+  "geosite_path": "./geosite.dat",
+  "direct_route": ["ir", "category-ir"],
   "cert_pin": "",
   "name": "My Hi Void"
 }

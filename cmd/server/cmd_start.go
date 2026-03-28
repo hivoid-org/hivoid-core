@@ -79,18 +79,22 @@ func runStart(args []string) {
 		Logger:       logger,
 		Handler:      forwarder.Handler(),
 		AllowedUUIDs: nil,
+		AntiProbe:    cfg.AntiProbe,
+		FallbackAddr: cfg.FallbackAddr,
 	})
 	defer srv.Close() //nolint:errcheck
 
 	applyRuntime := func(next *config.ServerConfig) error {
 		if err := srv.ReloadConfig(transport.ServerConfig{
-			ListenAddr: next.Listen(),
-			CertFile:   next.Cert,
-			KeyFile:    next.Key,
+			ListenAddr:   next.Listen(),
+			CertFile:     next.Cert,
+			KeyFile:      next.Key,
+			AntiProbe:    next.AntiProbe,
+			FallbackAddr: next.FallbackAddr,
 		}); err != nil {
 			return err
 		}
-		allowedUUIDs, userPolicies := buildRuntimePolicies(next, logger)
+		allowedUUIDs, userPolicies := buildRuntimePolicies(next, userControls, logger)
 		srv.Manager().SetMode(intelligence.ModeFromString(next.Mode))
 		srv.Manager().SetObfuscation(session.ObfsConfigForName(next.Obfs))
 		srv.Manager().SetAllowedUUIDs(allowedUUIDs)
@@ -134,7 +138,7 @@ func runStart(args []string) {
 	defer removePID() //nolint:errcheck
 
 	// Print startup box
-	allowedUUIDs, _ := buildRuntimePolicies(cfg, logger)
+	allowedUUIDs, _ := buildRuntimePolicies(cfg, userControls, logger)
 	printServerBox(cfg, listenAddr, len(allowedUUIDs))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -212,7 +216,7 @@ func upper(s string) string {
 	return string(b)
 }
 
-func buildRuntimePolicies(cfg *config.ServerConfig, logger *zap.Logger) ([][16]byte, map[[16]byte]session.UserPolicy) {
+func buildRuntimePolicies(cfg *config.ServerConfig, userControls *server.UserControlManager, logger *zap.Logger) ([][16]byte, map[[16]byte]session.UserPolicy) {
 	allowedUUIDs := make([][16]byte, 0, len(cfg.AllowedUUIDs))
 	userPolicies := make(map[[16]byte]session.UserPolicy, len(cfg.Users))
 	for _, u := range cfg.Users {
@@ -222,16 +226,31 @@ func buildRuntimePolicies(cfg *config.ServerConfig, logger *zap.Logger) ([][16]b
 			logger.Warn("skipping malformed user uuid", zap.String("uuid", u.UUID), zap.Error(err))
 			continue
 		}
+
+		// Use the higher of config value or real-time tracked usage
+		bytesIn, bytesOut := u.BytesIn, u.BytesOut
+		if userControls != nil {
+			liveIn, liveOut := userControls.UserUsage(id)
+			if liveIn > bytesIn {
+				bytesIn = liveIn
+			}
+			if liveOut > bytesOut {
+				bytesOut = liveOut
+			}
+		}
+
 		userPolicies[id] = session.UserPolicy{
 			UUID:           id,
 			Email:          u.Email,
 			Mode:           intelligence.ModeFromString(u.Mode),
 			ObfsConfig:     session.ObfsConfigForName(u.Obfs),
 			MaxConnections: u.MaxConnections,
+			MaxIPs:         u.MaxIPs,
+			BindIP:         u.BindIP,
 			BandwidthLimit: u.BandwidthLimit,
 			ExpireAtUnix:   parseExpireAt(u.ExpireAt),
-			BytesIn:        u.BytesIn,
-			BytesOut:       u.BytesOut,
+			BytesIn:        bytesIn,
+			BytesOut:       bytesOut,
 			Enabled:        u.Enabled,
 		}
 		if u.Enabled {

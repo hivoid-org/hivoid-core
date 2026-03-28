@@ -1,7 +1,5 @@
 // Package config implements the HiVoid URI and JSON configuration system.
 //
-// Config strings follow the same compact URI convention as vless/vmess/trojan:
-//
 //	hivoid://<uuid>@<host>:<port>[?key=value&...]#<name>
 //
 // Example:
@@ -60,6 +58,29 @@ type Config struct {
 	// Name is a human-readable label for this profile (URI fragment #...).
 	// Default: "hivoid".
 	Name string `json:"name"`
+
+	// BypassDomains is a list of domain suffixes (e.g. ".ir", "localhost") to route directly.
+	BypassDomains []string `json:"bypass_domains,omitempty"`
+
+	// BypassIPs is a list of IPs or CIDRs (e.g. "10.0.0.0/8") to route directly.
+	BypassIPs []string `json:"bypass_ips,omitempty"`
+
+	// GeoIPPath is the path to the v2ray geoip.dat file.
+	GeoIPPath string `json:"geoip_path,omitempty"`
+
+	// GeoSitePath is the path to the v2ray geosite.dat file.
+	GeoSitePath string `json:"geosite_path,omitempty"`
+
+	// DirectRoute specifies which Country/Tags from GeoIP and GeoSite should be bypassed (Direct).
+	// Example: ["us", "category-us"]
+	DirectRoute []string `json:"direct_route,omitempty"`
+
+	DirectDNSServers []string `json:"direct_dns_servers,omitempty"`
+
+	// PoolSize determines how many independent QUIC connections are established
+	// to the server to bypass per-connection ISP throttling.
+	// Default: 4. Max: 16.
+	PoolSize int `json:"pool_size,omitempty"`
 }
 
 // Default values applied when fields are absent in URI / JSON.
@@ -69,6 +90,7 @@ const (
 	DefaultSocksPort   = 1080
 	DefaultDNSPort     = 0
 	DefaultDNSUpstream = "8.8.8.8:53"
+	DefaultPoolSize    = 4
 	DefaultName        = "hivoid"
 	Scheme             = "hivoid"
 )
@@ -87,6 +109,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.DNSUpstream == "" {
 		c.DNSUpstream = DefaultDNSUpstream
+	}
+	if c.PoolSize == 0 {
+		c.PoolSize = DefaultPoolSize
 	}
 	if c.Name == "" {
 		c.Name = DefaultName

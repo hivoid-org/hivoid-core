@@ -6,7 +6,7 @@
 #   Linux:   amd64 (64-bit), 386 (x86)
 #   Android: arm64 (v8), arm (v7), amd64 (x86_64), 386 (x86)
 
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 # 1. Install dependencies for cross-compilation
 # mingw-w64: for Windows FFI

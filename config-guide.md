@@ -91,6 +91,8 @@ Unknown values are rejected at validation time.
   },
   "users": [],
   "max_conns": 0,
+  "anti_probe": true,
+  "fallback_addr": "127.0.0.1:8080",
   "allowed_hosts": [],
   "blocked_hosts": []
 }
@@ -141,6 +143,10 @@ Unknown values are rejected at validation time.
 ### Top-level controls
 - `max_conns`  
   Global connection cap (`0` = unlimited).
+- `anti_probe`  
+  Silently drops or tarpits unauthorized connections (Defends against active scanners).
+- `fallback_addr`  
+  Dummy destination to redirect undetected/invalid packets if `anti_probe` fails or falls back.
 - `allowed_hosts`  
   Outbound allowlist patterns.
 - `blocked_hosts`  
@@ -162,6 +168,8 @@ Each `users[]` entry supports:
   "email": "user@example.com",
   "enabled": true,
   "max_connections": 2,
+  "max_ips": 3,
+  "bind_ip": "192.168.1.50",
   "bandwidth_limit": 1024,
   "data_limit": 53687091200,
   "expire_at": "2027-01-01T00:00:00Z",
@@ -181,7 +189,11 @@ Each `users[]` entry supports:
 - `enabled`  
   If false, user is denied for new connections.
 - `max_connections`  
-  Per-user concurrent connection cap (`0` = unlimited).
+  Per-user concurrent stream cap (`0` = unlimited).
+- `max_ips`  
+  Limits the concurrent unique source IPs used by a single UUID (Account Sharing protection).
+- `bind_ip`  
+  Enforces all server-side outgoing TCP/UDP requests to originate from this specified interface IP.
 - `bandwidth_limit`  
   Per-user shared **bandwidth speed** limit in **KB/s** (`0` = unlimited).
 - `data_limit`  
@@ -220,10 +232,16 @@ Persisted usage file:
   "port": 4433,
   "mode": "balanced",
   "obfs": "none",
+  "pool_size": 4,
   "socks_port": 1080,
   "dns_port": 5353,
   "dns_upstream": "1.1.1.1:53",
   "insecure": true,
+  "bypass_domains": [".ir", "localhost"],
+  "bypass_ips": ["10.0.0.0/8", "192.168.1.0/24"],
+  "geoip_path": "./geoip.dat",
+  "geosite_path": "./geosite.dat",
+  "direct_route": ["ir", "category-ir"],
   "cert_pin": "",
   "name": "My HiVoid"
 }
@@ -236,10 +254,16 @@ Persisted usage file:
 - `port` (`1..65535`)
 - `mode` (enum)
 - `obfs` (enum)
+- `pool_size` (`1..16`, default `4`): Number of parallel QUIC connections to launch to bypass ISP single-thread stream limits.
 - `socks_port` (`0..65535`, `0` disables)
 - `dns_port` (`0..65535`, `0` disables)
 - `dns_upstream`
 - `insecure`
+- `bypass_domains`: Array of domain suffix targets to route directly bypassing the QUIC tunnel.
+- `bypass_ips`: Array of exact IPs or CIDRs (`e.g. 10.0.0.0/8`) to route locally.
+- `geoip_path`: Path to an official V2Ray `geoip.dat` file for smart routing.
+- `geosite_path`: Path to an official V2Ray `geosite.dat` file for smart routing.
+- `direct_route`: Array of country codes/tags (e.g. `["ir"]`) to extract from `dat` files and auto-bypass.
 - `cert_pin` (64 hex chars when set)
 - `name`
 

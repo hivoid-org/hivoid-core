@@ -179,9 +179,10 @@ const (
 //
 // Wire encoding:
 //
-//	[version:1][addr_type:1][addr_len:1][addr:N][port_hi:1][port_lo:1]
+//	[version:1][protocol:1][addr_type:1][addr_len:1][addr:N][port_hi:1][port_lo:1]
 type ProxyRequest struct {
 	Version  uint8
+	Protocol uint8 // 0x01 = TCP, 0x02 = UDP
 	AddrType ProxyAddrType
 	Addr     []byte // raw bytes (4, N, or 16)
 	Port     uint16
@@ -215,10 +216,21 @@ func NewProxyRequest(target string) (*ProxyRequest, error) {
 
 	return &ProxyRequest{
 		Version:  1,
+		Protocol: 0x01, // Default TCP
 		AddrType: addrType,
 		Addr:     addr,
 		Port:     port,
 	}, nil
+}
+
+// NewProxyUDPRequest builds a UDP ProxyRequest from a "host:port" string.
+func NewProxyUDPRequest(target string) (*ProxyRequest, error) {
+	req, err := NewProxyRequest(target)
+	if err != nil {
+		return nil, err
+	}
+	req.Protocol = 0x02
+	return req, nil
 }
 
 // Target returns the destination as "host:port".
@@ -238,32 +250,35 @@ func (r *ProxyRequest) Target() string {
 // Encode marshals the ProxyRequest.
 func (r *ProxyRequest) Encode() []byte {
 	addrLen := len(r.Addr)
-	buf := make([]byte, 3+addrLen+2)
+	buf := make([]byte, 4+addrLen+2)
 	buf[0] = r.Version
-	buf[1] = byte(r.AddrType)
-	buf[2] = byte(addrLen)
-	copy(buf[3:], r.Addr)
-	buf[3+addrLen] = byte(r.Port >> 8)
-	buf[3+addrLen+1] = byte(r.Port)
+	buf[1] = r.Protocol
+	buf[2] = byte(r.AddrType)
+	buf[3] = byte(addrLen)
+	copy(buf[4:], r.Addr)
+	buf[4+addrLen] = byte(r.Port >> 8)
+	buf[4+addrLen+1] = byte(r.Port)
 	return buf
 }
 
 // DecodeProxyRequest parses a ProxyRequest.
 func DecodeProxyRequest(b []byte) (*ProxyRequest, error) {
-	if len(b) < 5 {
+	if len(b) < 6 {
 		return nil, fmt.Errorf("proxy request too short: %d bytes", len(b))
 	}
 	version := b[0]
-	addrType := ProxyAddrType(b[1])
-	addrLen := int(b[2])
-	if len(b) < 3+addrLen+2 {
-		return nil, fmt.Errorf("proxy request truncated: need %d, have %d", 3+addrLen+2, len(b))
+	protocol := b[1]
+	addrType := ProxyAddrType(b[2])
+	addrLen := int(b[3])
+	if len(b) < 4+addrLen+2 {
+		return nil, fmt.Errorf("proxy request truncated: need %d, have %d", 4+addrLen+2, len(b))
 	}
 	addr := make([]byte, addrLen)
-	copy(addr, b[3:3+addrLen])
-	port := uint16(b[3+addrLen])<<8 | uint16(b[3+addrLen+1])
+	copy(addr, b[4:4+addrLen])
+	port := uint16(b[4+addrLen])<<8 | uint16(b[4+addrLen+1])
 	return &ProxyRequest{
 		Version:  version,
+		Protocol: protocol,
 		AddrType: addrType,
 		Addr:     addr,
 		Port:     port,

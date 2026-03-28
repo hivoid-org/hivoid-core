@@ -15,11 +15,8 @@ import (
 )
 
 const (
-	// GhostFrameSize is the MTU-optimized payload size for all frames.
-	GhostFrameSize = 1024
-
-	// GhostTickInterval defines the transmission frequency (25 PPS).
-	GhostTickInterval = 40 * time.Millisecond
+	// GhostDefaultFrameSize is the MTU-optimized payload size for all frames.
+	GhostDefaultFrameSize = 1024
 
 	// GhostMaxQueueSize bounds memory usage under congestion.
 	GhostMaxQueueSize = 2048
@@ -32,7 +29,7 @@ type ghostEngine struct {
 	queue  [][]byte      // Pending normalized data chunks
 	stopCh chan struct{}
 	
-	stream quic.Stream   // Persistent stream to minimize DPI fingerprinting
+	stream *quic.Stream   // Persistent stream to minimize DPI fingerprinting
 }
 
 // newGhostEngine initializes the CBR engine for the given session.
@@ -55,13 +52,13 @@ func (g *ghostEngine) Enqueue(data []byte) {
 		}
 
 		chunk := data
-		if len(chunk) > GhostFrameSize {
-			chunk = data[:GhostFrameSize]
+		if len(chunk) > GhostDefaultFrameSize {
+			chunk = data[:GhostDefaultFrameSize]
 		}
 		
-		normalized := make([]byte, GhostFrameSize)
+		normalized := make([]byte, GhostDefaultFrameSize)
 		copy(normalized, chunk)
-		if len(chunk) < GhostFrameSize {
+		if len(chunk) < GhostDefaultFrameSize {
 			// Fill remainder with cryptographic noise
 			_, _ = io.ReadFull(rand.Reader, normalized[len(chunk):])
 		}
@@ -70,18 +67,44 @@ func (g *ghostEngine) Enqueue(data []byte) {
 	}
 }
 
-// Run executes the transmission loop. Must be called as a goroutine.
-func (g *ghostEngine) Run() {
-	ticker := time.NewTicker(GhostTickInterval)
-	defer ticker.Stop()
+// randomJitter returns cryptographically secure random milliseconds.
+func randomJitter(maxMs int64) time.Duration {
+	if maxMs <= 0 {
+		return 0
+	}
+	b := make([]byte, 2)
+	_, _ = io.ReadFull(rand.Reader, b)
+	val := int64(b[0])<<8 | int64(b[1])
+	return time.Duration(val%maxMs) * time.Millisecond
+}
 
+// Run executes the transmission loop. Must be called as a goroutine.
+// Instead of a strict CBR, it uses Dynamic CBR (Adaptive Jitter) to evade fingerprinting.
+func (g *ghostEngine) Run() {
 	for {
+		g.mu.Lock()
+		qLen := len(g.queue)
+		g.mu.Unlock()
+
+		var nextInterval time.Duration
+		if qLen > 100 {
+			// High load (Streaming/Download): Low latency, high throughput (approx 100 PPS)
+			nextInterval = 10 * time.Millisecond
+		} else if qLen > 10 {
+			// Medium load (Web browsing): Normal throughput with slight jitter
+			nextInterval = 30*time.Millisecond + randomJitter(10)
+		} else {
+			// Idle load (Background): High noise jitter to break statistical CBR signatures
+			// and reduce unneeded noise bandwidth. Base 100ms + random up to 150ms.
+			nextInterval = 100*time.Millisecond + randomJitter(150)
+		}
+
 		select {
 		case <-g.stopCh:
 			return
 		case <-g.sess.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(nextInterval):
 			g.tick()
 		}
 	}
@@ -106,7 +129,7 @@ func (g *ghostEngine) tick() {
 		g.queue = g.queue[1:]
 	} else {
 		// Generate cryptographic noise
-		payload = make([]byte, GhostFrameSize)
+		payload = make([]byte, GhostDefaultFrameSize)
 		_, _ = io.ReadFull(rand.Reader, payload)
 		isNoise = true
 	}
@@ -143,7 +166,7 @@ func (g *ghostEngine) tick() {
 }
 
 // isGhostNoise identifies and discards chaff frames at the receiver.
-func isGhostNoise(stream quic.Stream) bool {
+func isGhostNoise(stream *quic.Stream) bool {
 	// Peek type byte without consuming full payload
 	header := make([]byte, 1)
 	_, err := io.ReadFull(stream, header)

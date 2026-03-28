@@ -388,7 +388,17 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 	currentSess = sess
 	mu.Unlock()
 
-	dialTunnel := func(dialCtx context.Context, target string) (net.Conn, error) {
+	bypassDomains := append([]string{}, cfg.BypassDomains...)
+	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
+	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
+		if len(cfg.DirectRoute) > 0 {
+			if err := client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
+				alog("HiVoidFFI", "geodata load failed: "+err.Error())
+			}
+		}
+	}
+
+	dialTunnel := func(dialCtx context.Context, target string, udp bool) (net.Conn, error) {
 		mu.Lock()
 		s := currentSess
 		mu.Unlock()
@@ -400,16 +410,24 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 			s = next
 			mu.Unlock()
 		}
+		if udp {
+			return s.DialUDPTunnel(dialCtx, target)
+		}
 		return s.DialTunnel(dialCtx, target)
 	}
 
 	if cfg.DNSPort > 0 {
 		alog("HiVoidFFI", fmt.Sprintf("runCore: starting DNS proxy on :%d", cfg.DNSPort))
 		dnsProxy := client.NewDNSProxy(client.DNSProxyConfig{
-			ListenAddr:  fmt.Sprintf("127.0.0.1:%d", cfg.DNSPort),
-			UpstreamDNS: cfg.DNSUpstream,
-			Logger:      logger,
-		}, dialTunnel)
+			ListenAddr:    fmt.Sprintf("127.0.0.1:%d", cfg.DNSPort),
+			UpstreamDNS:   cfg.DNSUpstream,
+			Logger:        logger,
+			BypassDomains: bypassDomains,
+			BypassIPs:     parsedBypassIPs,
+			DirectDNS:     cfg.DirectDNSServers,
+		}, func(ctx context.Context, target string) (net.Conn, error) {
+			return dialTunnel(ctx, target, false)
+		})
 		go func() {
 			if err := dnsProxy.ListenAndServe(ctx); err != nil {
 				alog("HiVoidFFI", "DNS proxy stopped: "+err.Error())
@@ -420,10 +438,12 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 	if cfg.SocksPort > 0 {
 		alog("HiVoidFFI", fmt.Sprintf("runCore: starting SOCKS5 proxy on :%d", cfg.SocksPort))
 		proxy := client.NewProxyServer(client.ProxyConfig{
-			ListenAddr:   fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort),
-			EnableSOCKS5: true,
-			EnableHTTP:   true,
-			Logger:       logger,
+			ListenAddr:    fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort),
+			EnableSOCKS5:  true,
+			EnableHTTP:    true,
+			Logger:        logger,
+			BypassDomains: bypassDomains,
+			BypassIPs:     parsedBypassIPs,
 		}, dialTunnel)
 		go func() {
 			if err := proxy.ListenAndServe(ctx); err != nil {

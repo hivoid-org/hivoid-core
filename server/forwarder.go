@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hivoid-org/hivoid-core/frames"
 	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
 	"github.com/quic-go/quic-go"
@@ -176,7 +177,7 @@ func (f *Forwarder) Handler() transport.SessionHandler {
 
 		for {
 			// Phase 1: accept stream and read ProxyRequest
-			stream, target, err := sess.AcceptTunnel(ctx)
+			stream, req, err := sess.AcceptTunnel(ctx)
 			if err != nil {
 				if ctx.Err() != nil || isSessionClosed(err) || searchStr(err.Error(), "accept tunnel stream:") {
 					return
@@ -185,31 +186,30 @@ func (f *Forwarder) Handler() transport.SessionHandler {
 				continue
 			}
 			f.wg.Add(1)
-			go f.forward(ctx, sess, stream, target, log)
+			go f.forward(ctx, sess, stream, req, log)
 		}
 	}
 }
 
-// forward handles one proxied TCP connection:
-//  1. Enforce limits and ACL
-//  2. Dial the target
-//  3. Send ProxyResponse (success or failure) to client
-//  4. Wrap the stream in a TunnelConn and relay
+// forward handles one proxied connection (TCP or UDP):
 func (f *Forwarder) forward(
 	ctx context.Context,
 	sess *session.Session,
-	stream quic.Stream,
-	target string,
+	stream *quic.Stream,
+	req *frames.ProxyRequest,
 	log *zap.Logger,
 ) {
 	defer f.wg.Done()
+	target := req.Target()
 	rt := f.runtime.Load().(forwarderRuntime)
 	userUUID := sess.ClientUUID()
+	userPolicy, hasUserPolicy := rt.users[userUUID]
+
 	if f.users != nil {
 		if err := f.users.AllowNewConnection(userUUID); err != nil {
-			session.SendProxyErrToStream(stream, err.Error())
+			session.SendProxyError(stream, err.Error())
 			stream.CancelRead(quic.StreamErrorCode(0))
-			stream.Close()
+			_ = stream.Close()
 			log.Warn("user policy reject", zap.String("target", target), zap.Error(err))
 			return
 		}
@@ -217,33 +217,47 @@ func (f *Forwarder) forward(
 
 	// ACL check
 	if err := f.checkACL(rt, target); err != nil {
-		session.SendProxyErrToStream(stream, err.Error())
+		session.SendProxyError(stream, err.Error())
 		stream.CancelRead(quic.StreamErrorCode(0))
-		stream.Close()
+		_ = stream.Close()
 		log.Warn("ACL blocked", zap.String("target", target), zap.Error(err))
 		return
 	}
 
-	log.Debug("forwarding", zap.String("target", target))
+	if req.Protocol == 0x02 { // UDP
+		f.forwardUDP(ctx, sess, stream, req, log)
+		return
+	}
+
+	log.Debug("forwarding TCP", zap.String("target", target))
 
 	// Phase 2: dial the real TCP destination
 	dialCtx, cancel := context.WithTimeout(ctx, rt.dialTimeout)
 	defer cancel()
 
-	remote, err := f.dialer.DialContext(dialCtx, "tcp", target)
+	// Handle BindIP if set
+	dialer := f.dialer
+	if hasUserPolicy && userPolicy.BindIP != "" {
+		ip := net.ParseIP(userPolicy.BindIP)
+		if ip != nil {
+			dialer.LocalAddr = &net.TCPAddr{IP: ip}
+		}
+	}
+
+	remote, err := dialer.DialContext(dialCtx, "tcp", target)
 	if err != nil {
-		session.SendProxyErrToStream(stream, fmt.Sprintf("dial %s: %s", target, err.Error()))
+		session.SendProxyError(stream, fmt.Sprintf("dial %s: %s", target, err.Error()))
 		stream.CancelRead(quic.StreamErrorCode(0))
-		stream.Close()
+		_ = stream.Close()
 		log.Warn("dial failed", zap.String("target", target), zap.Error(err))
 		return
 	}
 	defer remote.Close()
 
 	// Phase 3: send success response; client's DialTunnel unblocks after this
-	if err := session.SendProxyOkToStream(stream); err != nil {
+	if err := session.SendProxyOK(stream); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(0))
-		stream.Close()
+		_ = stream.Close()
 		log.Debug("write proxy ok failed", zap.Error(err))
 		return
 	}
@@ -268,6 +282,123 @@ func (f *Forwarder) forward(
 		zap.Int64("bytes", n),
 		zap.Duration("duration", time.Since(start)),
 	)
+}
+
+func (f *Forwarder) forwardUDP(
+	ctx context.Context,
+	sess *session.Session,
+	stream *quic.Stream,
+	req *frames.ProxyRequest,
+	log *zap.Logger,
+) {
+	target := req.Target()
+	log.Debug("forwarding UDP", zap.String("target", target))
+	rt := f.runtime.Load().(forwarderRuntime)
+	userUUID := sess.ClientUUID()
+
+	// Dial UDP
+	addr, err := net.ResolveUDPAddr("udp", target)
+	if err != nil {
+		session.SendProxyError(stream, fmt.Sprintf("resolve %s: %s", target, err.Error()))
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return
+	}
+
+	var localAddr *net.UDPAddr
+	userPolicy, ok := rt.users[userUUID]
+	if ok && userPolicy.BindIP != "" {
+		ip := net.ParseIP(userPolicy.BindIP)
+		if ip != nil {
+			localAddr = &net.UDPAddr{IP: ip}
+		}
+	}
+
+	remote, err := net.DialUDP("udp", localAddr, addr)
+	if err != nil {
+		session.SendProxyError(stream, fmt.Sprintf("dial udp %s: %s", target, err.Error()))
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		log.Warn("dial udp failed", zap.String("target", target), zap.Error(err))
+		return
+	}
+	defer remote.Close()
+
+	if err := session.SendProxyOK(stream); err != nil {
+		_ = stream.Close()
+		return
+	}
+
+	tunnel := sess.WrapTunnel(stream, target)
+	defer tunnel.Close()
+
+	// Relay UDP packets
+	// Note: We use length-prefixing on the QUIC stream to carry UDP packets.
+	f.biRelayUDP(tunnel, remote, userUUID, rt.disconnectExpired)
+}
+
+func (f *Forwarder) biRelayUDP(tunnel net.Conn, remote *net.UDPConn, userUUID [16]byte, disconnectExpired bool) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// User Tunnel -> Remote (Upload)
+	go func() {
+		defer wg.Done()
+		header := make([]byte, 2)
+		for {
+			if _, err := io.ReadFull(tunnel, header); err != nil {
+				return
+			}
+			n := int(header[0])<<8 | int(header[1])
+			if n > 65535 || n < 0 {
+				return
+			}
+			pkt := make([]byte, n)
+			if _, err := io.ReadFull(tunnel, pkt); err != nil {
+				return
+			}
+
+			if f.users != nil {
+				if disconnectExpired && f.users.IsExpired(userUUID) {
+					return
+				}
+				f.users.Throttle(userUUID, n)
+				f.users.AddBytesOut(userUUID, uint64(n))
+			}
+			_, _ = remote.Write(pkt)
+		}
+	}()
+
+	// Remote -> User Tunnel (Download)
+	go func() {
+		defer wg.Done()
+		pkt := make([]byte, 65535)
+		header := make([]byte, 2)
+		for {
+			n, err := remote.Read(pkt)
+			if err != nil {
+				return
+			}
+			if n <= 0 {
+				continue
+			}
+
+			header[0] = byte(n >> 8)
+			header[1] = byte(n)
+			if _, err := tunnel.Write(header); err != nil {
+				return
+			}
+			if _, err := tunnel.Write(pkt[:n]); err != nil {
+				return
+			}
+
+			if f.users != nil {
+				f.users.AddBytesIn(userUUID, uint64(n))
+			}
+		}
+	}()
+
+	wg.Wait()
 }
 
 // biRelay copies data between a and b concurrently.

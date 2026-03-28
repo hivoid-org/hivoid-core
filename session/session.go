@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,11 @@ import (
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/obfuscation"
 	"github.com/quic-go/quic-go"
+)
+
+var (
+	ErrHandshakeTimeout = errors.New("handshake timeout (probing?)")
+	ErrInvalidFrame     = errors.New("invalid protocol frame")
 )
 
 // ID is a 16-byte random session identifier.
@@ -71,7 +77,7 @@ func (s State) String() string {
 // Session is a fully authenticated HiVoid session over a single QUIC connection.
 type Session struct {
 	id       ID
-	conn     quic.Connection
+	conn     *quic.Conn
 	isClient bool
 
 	// uuid is the client's identity, sent in ClientHello.
@@ -115,7 +121,7 @@ type Session struct {
 	sentBytes  atomic.Int64
 
 	// Control stream (stream 0): carries non-data frames
-	ctrlStream quic.Stream
+	ctrlStream *quic.Stream
 	ctrlReader *bufio.Reader
 
 	// Intelligence and obfuscation
@@ -178,7 +184,7 @@ func DefaultConfig(isClient bool) Config {
 // New creates a Session that wraps an already-established QUIC connection.
 // The hybrid key exchange (ClientHello/ServerHello) must be performed
 // via PerformHandshake before this session is usable.
-func New(conn quic.Connection, cfg Config) (*Session, error) {
+func New(conn *quic.Conn, cfg Config) (*Session, error) {
 	id, err := GenerateID()
 	if err != nil {
 		return nil, err
@@ -225,7 +231,7 @@ func (s *Session) State() State {
 }
 
 // Connection returns the underlying QUIC connection.
-func (s *Session) Connection() quic.Connection { return s.conn }
+func (s *Session) Connection() *quic.Conn { return s.conn }
 
 // GetTrafficStats returns the total bytes sent and received during this session.
 func (s *Session) GetTrafficStats() (uint64, uint64) {
@@ -356,16 +362,40 @@ func (s *Session) PerformHandshakeAsServer() error {
 		}
 	}
 
-	helloFrame, err := frames.Decode(s.ctrlReader)
-	if err != nil {
-		return fmt.Errorf("recv client hello frame: %w", err)
+	// Read ClientHello with another tight timeout to fail probes fast
+	firstFrameChan := make(chan struct {
+		f   *frames.Frame
+		err error
+	}, 1)
+
+	go func() {
+		f, err := frames.Decode(s.ctrlReader)
+		firstFrameChan <- struct {
+			f   *frames.Frame
+			err error
+		}{f, err}
+	}()
+
+	var helloFrame *frames.Frame
+	select {
+	case res := <-firstFrameChan:
+		helloFrame, err = res.f, res.err
+	case <-time.After(5 * time.Second):
+		return ErrHandshakeTimeout
 	}
+
+	if err != nil {
+		return fmt.Errorf("read client hello: %w", err)
+	}
+
+	if helloFrame.Type != frames.FrameControl {
+		return fmt.Errorf("expected CONTROL frame, got 0x%02x: %w", helloFrame.Type, ErrInvalidFrame)
+	}
+
 	clientHello, err := frames.DecodeClientHello(helloFrame.Payload)
 	if err != nil {
 		return fmt.Errorf("decode client hello: %w", err)
 	}
-
-	// Remove old server-side H3 logic as it's now handled by detection
 
 	s.salt = make([]byte, 32)
 	copy(s.salt, clientHello.SessionSalt[:])
@@ -545,7 +575,7 @@ func (s *Session) RecvStream(ctx context.Context) ([]byte, error) {
 	}
 }
 
-// DialTunnel opens a new multiplexed proxy tunnel to the given target address.
+// DialTunnel opens a new multiplexed proxy tunnel (TCP) to the target address.
 func (s *Session) DialTunnel(ctx context.Context, target string) (net.Conn, error) {
 	if s.State() != StateActive {
 		return nil, fmt.Errorf("session not active")
@@ -590,19 +620,64 @@ func (s *Session) DialTunnel(ctx context.Context, target string) (net.Conn, erro
 	return newTunnelConn(stream, s, target), nil
 }
 
+// DialUDPTunnel opens a new multiplexed proxy tunnel (UDP) to the target address.
+func (s *Session) DialUDPTunnel(ctx context.Context, target string) (net.Conn, error) {
+	if s.State() != StateActive {
+		return nil, fmt.Errorf("session not active")
+	}
+
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open tunnel stream: %w", err)
+	}
+
+	req, err := frames.NewProxyUDPRequest(target)
+	if err != nil {
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return nil, fmt.Errorf("build proxy udp request: %w", err)
+	}
+	reqFrame := &frames.Frame{Type: frames.FrameProxy, Payload: req.Encode()}
+	if _, err := reqFrame.WriteTo(stream); err != nil {
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return nil, fmt.Errorf("send proxy udp request: %w", err)
+	}
+
+	respFrame, err := frames.Decode(stream)
+	if err != nil {
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return nil, fmt.Errorf("read proxy response: %w", err)
+	}
+	resp, err := frames.DecodeProxyResponse(respFrame.Payload)
+	if err != nil {
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return nil, fmt.Errorf("parse proxy response: %w", err)
+	}
+	if !resp.Success {
+		stream.CancelRead(quic.StreamErrorCode(0))
+		_ = stream.Close()
+		return nil, fmt.Errorf("proxy connect failed: %s", resp.ErrMsg)
+	}
+
+	return newTunnelConn(stream, s, target), nil
+}
+
 // AcceptTunnel accepts the next inbound proxy tunnel stream and reads its ProxyRequest.
-func (s *Session) AcceptTunnel(ctx context.Context) (quic.Stream, string, error) {
+func (s *Session) AcceptTunnel(ctx context.Context) (*quic.Stream, *frames.ProxyRequest, error) {
 	for {
 		stream, err := s.conn.AcceptStream(ctx)
 		if err != nil {
-			return nil, "", fmt.Errorf("accept tunnel stream: %w", err)
+			return nil, nil, fmt.Errorf("accept tunnel stream: %w", err)
 		}
 
 		f, err := frames.Decode(stream)
 		if err != nil {
 			stream.CancelRead(quic.StreamErrorCode(0))
 			_ = stream.Close()
-			return nil, "", fmt.Errorf("read tunnel frame: %w", err)
+			return nil, nil, fmt.Errorf("read tunnel frame: %w", err)
 		}
 
 		// Silently discard Ghost Noise frames
@@ -614,7 +689,7 @@ func (s *Session) AcceptTunnel(ctx context.Context) (quic.Stream, string, error)
 		if f.Type != frames.FrameProxy {
 			stream.CancelRead(quic.StreamErrorCode(0))
 			_ = stream.Close()
-			return nil, "", fmt.Errorf("expected PROXY frame, got 0x%02x", f.Type)
+			return nil, nil, fmt.Errorf("expected PROXY frame, got 0x%02x", f.Type)
 		}
 
 		req, err := frames.DecodeProxyRequest(f.Payload)
@@ -622,20 +697,20 @@ func (s *Session) AcceptTunnel(ctx context.Context) (quic.Stream, string, error)
 			_ = sendProxyError(stream, err.Error())
 			stream.CancelRead(quic.StreamErrorCode(0))
 			_ = stream.Close()
-			return nil, "", fmt.Errorf("parse proxy request: %w", err)
+			return nil, nil, fmt.Errorf("parse proxy request: %w", err)
 		}
 
-		return stream, req.Target(), nil
+		return stream, req, nil
 	}
 }
 
 // WrapTunnel wraps a pre-negotiated QUIC stream into a net.Conn with AEAD encryption.
-func (s *Session) WrapTunnel(stream quic.Stream, target string) net.Conn {
+func (s *Session) WrapTunnel(stream *quic.Stream, target string) net.Conn {
 	return newTunnelConn(stream, s, target)
 }
 
 // SendProxyOK writes a successful proxy response to the stream.
-func SendProxyOK(stream quic.Stream) error {
+func SendProxyOK(stream *quic.Stream) error {
 	resp := frames.ProxyResponse{Success: true}
 	f := &frames.Frame{Type: frames.FrameProxy, Payload: resp.Encode()}
 	_, err := f.WriteTo(stream)
@@ -643,11 +718,11 @@ func SendProxyOK(stream quic.Stream) error {
 }
 
 // SendProxyError writes a failure proxy response to the stream.
-func SendProxyError(stream quic.Stream, msg string) error {
+func SendProxyError(stream *quic.Stream, msg string) error {
 	return sendProxyError(stream, msg)
 }
 
-func sendProxyError(stream quic.Stream, msg string) error {
+func sendProxyError(stream *quic.Stream, msg string) error {
 	resp := frames.ProxyResponse{Success: false, ErrMsg: msg}
 	f := &frames.Frame{Type: frames.FrameProxy, Payload: resp.Encode()}
 	_, err := f.WriteTo(stream)

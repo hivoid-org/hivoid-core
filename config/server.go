@@ -34,6 +34,8 @@ type ServerUserConfig struct {
 	Email          string `json:"email"`
 	Enabled        bool   `json:"enabled"`
 	MaxConnections int    `json:"max_connections"`
+	MaxIPs         int    `json:"max_ips"`
+	BindIP         string `json:"bind_ip"`
 	Mode           string `json:"mode"`
 	Obfs           string `json:"obfs"`
 	BandwidthLimit int64  `json:"bandwidth_limit"`
@@ -56,6 +58,8 @@ type ServerConfig struct {
 	AllowedHosts []string `json:"allowed_hosts"`
 	BlockedHosts []string `json:"blocked_hosts"`
 	AllowedUUIDs []string `json:"allowed_uuids"`
+	AntiProbe    bool     `json:"anti_probe"`
+	FallbackAddr string   `json:"fallback_addr"`
 	Debug        bool     `json:"debug"`
 
 	// Dynamic features and user policies.
@@ -155,6 +159,11 @@ func (c *ServerConfig) ValidateServer() error {
 	if c.MaxConns < 0 {
 		errs = append(errs, fmt.Sprintf("max_conns: must be >= 0, got %d", c.MaxConns))
 	}
+	if c.FallbackAddr != "" {
+		if _, _, err := splitHostPort(c.FallbackAddr); err != nil {
+			errs = append(errs, fmt.Sprintf("fallback_addr: invalid format %q: %v", c.FallbackAddr, err))
+		}
+	}
 	for _, u := range c.AllowedUUIDs {
 		if err := validateUUID(u); err != nil {
 			errs = append(errs, fmt.Sprintf("allowed_uuids: %s: %v", u, err))
@@ -174,6 +183,16 @@ func (c *ServerConfig) ValidateServer() error {
 		seenUsers[id] = struct{}{}
 		if u.MaxConnections < 0 {
 			errs = append(errs, fmt.Sprintf("users[%d].max_connections: must be >= 0, got %d", row, u.MaxConnections))
+		}
+		if u.MaxIPs < 0 {
+			errs = append(errs, fmt.Sprintf("users[%d].max_ips: must be >= 0, got %d", row, u.MaxIPs))
+		}
+		if u.BindIP != "" {
+			importNet := false
+			if u.BindIP != "" {
+				importNet = true
+			}
+			_ = importNet
 		}
 		if u.BandwidthLimit < 0 {
 			errs = append(errs, fmt.Sprintf("users[%d].bandwidth_limit: must be >= 0, got %d", row, u.BandwidthLimit))

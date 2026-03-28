@@ -34,6 +34,9 @@ func QUICConfig() *quic.Config {
 		MaxStreamReceiveWindow:         128 * 1024 * 1024, // 128 MB per stream
 		InitialConnectionReceiveWindow: 128 * 1024 * 1024, // 128 MB per connection
 		MaxConnectionReceiveWindow:     512 * 1024 * 1024, // 512 MB per connection
+		// Explicitly enable dynamic Path MTU Discovery (PMTUD)
+		// This quickly finds the path's optimal MTU to prevent IP-level fragmentation
+		DisablePathMTUDiscovery: false,
 	}
 }
 

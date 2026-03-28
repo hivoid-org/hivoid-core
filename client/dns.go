@@ -1,9 +1,11 @@
 // Package client — DNS-over-tunnel proxy.
 //
-// DNSProxy listens for DNS queries on a local UDP port and forwards them
-// through the HiVoid encrypted tunnel to the server, which resolves them
-// using the server's own DNS resolver. This prevents DNS leaks — without
-// this, DNS queries would bypass the tunnel and reveal browsing activity.
+// DNSProxy listens for DNS queries on a local UDP port. Queries whose QNAME
+// matches the same bypass rules as the SOCKS proxy (manual lists + geosite/geoip)
+// are resolved via the machine's normal resolvers (Unix: /etc/resolv.conf) and
+// 1.1.1.1, so domestic/direct hosts avoid round-trips through the tunnel.
+// All other queries go through the HiVoid tunnel to the configured upstream
+// (default 8.8.8.8), limiting DNS leaks for non-bypass traffic.
 //
 // DNS-over-tunnel protocol:
 //  1. Client proxy receives a raw DNS query over UDP
@@ -19,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +45,12 @@ type DNSProxyConfig struct {
 	UpstreamDNS string
 	// Logger is an optional structured logger.
 	Logger *zap.Logger
+	// BypassDomains and BypassIPs mirror ProxyConfig: matching QNAMEs use direct DNS.
+	BypassDomains []string
+	BypassIPs     []*net.IPNet
+	// DirectDNS lists UDP resolvers for bypass queries (host or host:port).
+	// Empty means OS resolvers (Unix) plus 1.1.1.1:53.
+	DirectDNS []string
 }
 
 // DefaultDNSProxyConfig returns sensible defaults.
@@ -54,9 +63,10 @@ func DefaultDNSProxyConfig() DNSProxyConfig {
 
 // DNSProxy forwards DNS queries through the HiVoid tunnel to prevent DNS leaks.
 type DNSProxy struct {
-	cfg    DNSProxyConfig
-	dial   func(ctx context.Context, target string) (net.Conn, error)
-	logger *zap.Logger
+	cfg             DNSProxyConfig
+	dial            func(ctx context.Context, target string) (net.Conn, error)
+	logger          *zap.Logger
+	directResolvers []string
 
 	mu   sync.Mutex
 	conn *net.UDPConn
@@ -71,7 +81,8 @@ func NewDNSProxy(cfg DNSProxyConfig, sessDial func(ctx context.Context, target s
 	if cfg.UpstreamDNS == "" {
 		cfg.UpstreamDNS = defaultUpstreamDNS
 	}
-	return &DNSProxy{cfg: cfg, dial: sessDial, logger: logger}
+	direct := DirectDNSResolvers(cfg.DirectDNS)
+	return &DNSProxy{cfg: cfg, dial: sessDial, logger: logger, directResolvers: direct}
 }
 
 // ListenAndServe starts the DNS UDP listener and blocks until ctx is cancelled.
@@ -90,10 +101,18 @@ func (d *DNSProxy) ListenAndServe(ctx context.Context) error {
 	d.conn = conn
 	d.mu.Unlock()
 
-	d.logger.Info("dns proxy listening",
+	fields := []zap.Field{
 		zap.String("addr", d.cfg.ListenAddr),
-		zap.String("upstream", d.cfg.UpstreamDNS),
-	)
+		zap.String("tunnel_upstream", d.cfg.UpstreamDNS),
+	}
+	if len(d.cfg.BypassDomains) > 0 || len(d.cfg.BypassIPs) > 0 {
+		fields = append(fields,
+			zap.Int("bypass_domain_rules", len(d.cfg.BypassDomains)),
+			zap.Int("bypass_ip_rules", len(d.cfg.BypassIPs)),
+			zap.Int("direct_resolvers", len(d.directResolvers)),
+		)
+	}
+	d.logger.Info("dns proxy listening", fields...)
 
 	go func() {
 		<-ctx.Done()
@@ -131,6 +150,21 @@ func (d *DNSProxy) Close() error {
 func (d *DNSProxy) handleQuery(ctx context.Context, udpConn *net.UDPConn, clientAddr *net.UDPAddr, query []byte) {
 	qctx, cancel := context.WithTimeout(ctx, dnsTimeout)
 	defer cancel()
+
+	if name, ok := dnsFirstQuestionName(query); ok && HostMatchesBypass(name, d.cfg.BypassDomains, d.cfg.BypassIPs) {
+		for _, srv := range d.directResolvers {
+			resp, err := exchangeDNSUDP(qctx, query, srv)
+			if err != nil {
+				d.logger.Debug("direct dns exchange failed", zap.String("server", srv), zap.String("name", name), zap.Error(err))
+				continue
+			}
+			if _, err := udpConn.WriteToUDP(resp, clientAddr); err != nil {
+				d.logger.Debug("dns udp reply failed", zap.Error(err))
+			}
+			return
+		}
+		d.logger.Debug("direct dns exhausted, using tunnel", zap.String("name", name))
+	}
 
 	// Open a tunnel to the upstream DNS server over TCP
 	tunnel, err := d.dial(qctx, d.cfg.UpstreamDNS)
@@ -186,4 +220,46 @@ func readDNSTCP(r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("read dns body: %w", err)
 	}
 	return buf, nil
+}
+
+// dnsFirstQuestionName returns the QNAME from the first question (standard query, no name compression).
+func dnsFirstQuestionName(msg []byte) (string, bool) {
+	if len(msg) < 12 {
+		return "", false
+	}
+	flags := binary.BigEndian.Uint16(msg[2:4])
+	if flags&0x8000 != 0 {
+		return "", false // QR: not a query
+	}
+	if (flags>>11)&0xF != 0 {
+		return "", false // opcode: only standard QUERY
+	}
+	if binary.BigEndian.Uint16(msg[4:6]) < 1 {
+		return "", false
+	}
+	off := 12
+	var labels []string
+	for {
+		if off >= len(msg) {
+			return "", false
+		}
+		l := int(msg[off])
+		off++
+		if l == 0 {
+			break
+		}
+		if l > 63 || l&0xC0 != 0 {
+			// Compression or extended label — fall back to tunnel path.
+			return "", false
+		}
+		if off+l > len(msg) {
+			return "", false
+		}
+		labels = append(labels, string(msg[off:off+l]))
+		off += l
+	}
+	if off+4 > len(msg) {
+		return "", false
+	}
+	return strings.Join(labels, "."), true
 }

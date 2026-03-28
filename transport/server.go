@@ -6,6 +6,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -73,6 +74,9 @@ type Server struct {
 	tlsCfg      *tls.Config
 	listeners   map[string]*quic.Listener
 
+	antiProbe    bool
+	fallbackAddr string
+
 	serveMu   sync.Mutex
 	serveCtx  context.Context
 	serving   bool
@@ -94,8 +98,11 @@ type ServerConfig struct {
 	// Handler is called for each new session in a separate goroutine.
 	Handler SessionHandler
 	// AllowedUUIDs is the server-side UUID allowlist. If non-empty, only
-	// clients whose UUID exactly matches one of these values are accepted.
 	AllowedUUIDs [][16]byte
+	// AntiProbe enables active probing defense (tarpitting scanners).
+	AntiProbe bool
+	// FallbackAddr is the address to proxy unrecognized traffic to (if supported).
+	FallbackAddr string
 }
 
 // NewServer creates a new HiVoid server.
@@ -113,10 +120,11 @@ func NewServer(cfg ServerConfig) *Server {
 		certFile:   cfg.CertFile,
 		keyFile:    cfg.KeyFile,
 		mode:       cfg.Mode,
-		logger:     logger,
-		manager:    mgr,
-		handler:    cfg.Handler,
-		listeners:  make(map[string]*quic.Listener),
+		manager:      mgr,
+		handler:      cfg.Handler,
+		listeners:    make(map[string]*quic.Listener),
+		antiProbe:    cfg.AntiProbe,
+		fallbackAddr: cfg.FallbackAddr,
 	}
 }
 
@@ -322,12 +330,19 @@ func (srv *Server) Close() error {
 }
 
 // handleConn runs the server-side handshake and invokes the session handler.
-func (srv *Server) handleConn(ctx context.Context, conn quic.Connection) {
+func (srv *Server) handleConn(ctx context.Context, conn *quic.Conn) {
 	remote := conn.RemoteAddr().String()
 	srv.logger.Info("new connection", zap.String("remote", remote))
 
 	sess, err := srv.manager.AcceptAndHandshake(ctx, conn)
 	if err != nil {
+		if srv.antiProbe && (errors.Is(err, session.ErrHandshakeTimeout) || errors.Is(err, session.ErrInvalidFrame)) {
+			srv.logger.Warn("active probe detected, tarpitting connection", zap.String("remote", remote), zap.Error(err))
+			// Tarpit the scanner: don't close the connection gracefully.
+			// Let it linger until the QUIC idle timeout kills it, wasting the scanner's resources.
+			return
+		}
+
 		srv.logger.Error("handshake failed",
 			zap.String("remote", remote),
 			zap.Error(err),

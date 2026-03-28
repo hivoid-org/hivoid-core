@@ -8,10 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/hivoid-org/hivoid-core/client"
 	"github.com/hivoid-org/hivoid-core/config"
@@ -89,81 +86,45 @@ func runStart(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), sigs...)
 	defer stop()
 
-	logger.Info("connecting", zap.String("server", cfg.ServerAddr()), zap.String("name", cfg.Name))
-
-	sess, err := connectRetry(ctx, hvClient, logger)
+	logger.Info("initializing session pool", zap.String("server", cfg.ServerAddr()), zap.Int("pool_size", cfg.PoolSize))
+	pool, err := client.NewSessionPool(ctx, cfg, hvClient, logger)
 	if err != nil {
-		logger.Fatal("connect failed", zap.Error(err))
+		logger.Fatal("failed to initialize session pool", zap.Error(err))
 	}
-	logger.Info("session established", zap.String("session", sess.ID().String()))
+	defer pool.Close()
 
-	var sessMu sync.RWMutex
-	var reconnectMu sync.Mutex
-	currentSess := sess
-	setSession := func(next *session.Session) {
-		sessMu.Lock()
-		old := currentSess
-		currentSess = next
-		sessMu.Unlock()
-		if old != nil && old != next {
-			_ = old.Close()
-		}
-	}
-	getSession := func() *session.Session {
-		sessMu.RLock()
-		defer sessMu.RUnlock()
-		return currentSess
-	}
-	reconnect := func(dialCtx context.Context) (*session.Session, error) {
-		reconnectMu.Lock()
-		defer reconnectMu.Unlock()
-
-		if s := getSession(); s != nil && s.State() == session.StateActive {
-			return s, nil
-		}
-
-		next, err := connectRetry(dialCtx, hvClient, logger)
-		if err != nil {
-			return nil, err
-		}
-		setSession(next)
-		logger.Info("session re-established", zap.String("session", next.ID().String()))
-		return next, nil
-	}
-	dialTunnel := func(dialCtx context.Context, target string) (net.Conn, error) {
-		s := getSession()
-		if s == nil || s.State() != session.StateActive {
-			var err error
-			s, err = reconnect(dialCtx)
-			if err != nil {
-				return nil, fmt.Errorf("reconnect: %w", err)
+	bypassDomains := append([]string{}, cfg.BypassDomains...)
+	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
+	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
+		if len(cfg.DirectRoute) > 0 {
+			logger.Info("loading v2ray geodata for domestic bypass", zap.Strings("tags", cfg.DirectRoute))
+			if err := client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
+				logger.Warn("failed to load geodata", zap.Error(err))
+			} else {
+				logger.Info("geodata loaded successfully", zap.Int("domains", len(bypassDomains)), zap.Int("ips", len(parsedBypassIPs)))
 			}
+		} else {
+			logger.Warn("geoip_path or geosite_path provided but no direct_route tags specified")
 		}
+	}
 
-		conn, err := s.DialTunnel(dialCtx, target)
-		if err == nil {
-			return conn, nil
-		}
-		if !shouldRetryWithReconnect(err) {
-			return nil, err
-		}
-
-		logger.Warn("dial failed, reconnecting session", zap.String("target", target), zap.Error(err))
-		s, rerr := reconnect(dialCtx)
-		if rerr != nil {
-			return nil, fmt.Errorf("dial failed: %v; reconnect failed: %w", err, rerr)
-		}
-		return s.DialTunnel(dialCtx, target)
+	dialTunnel := func(dialCtx context.Context, target string, udp bool) (net.Conn, error) {
+		return pool.DialTunnel(dialCtx, target, udp)
 	}
 
 	// DNS proxy
 	if cfg.DNSPort > 0 {
 		dnsCfg := client.DNSProxyConfig{
-			ListenAddr:  fmt.Sprintf("127.0.0.1:%d", cfg.DNSPort),
-			UpstreamDNS: cfg.DNSUpstream,
-			Logger:      logger,
+			ListenAddr:    fmt.Sprintf("127.0.0.1:%d", cfg.DNSPort),
+			UpstreamDNS:   cfg.DNSUpstream,
+			Logger:        logger,
+			BypassDomains: bypassDomains,
+			BypassIPs:     parsedBypassIPs,
+			DirectDNS:     cfg.DirectDNSServers,
 		}
-		dnsProxy := client.NewDNSProxy(dnsCfg, dialTunnel)
+		dnsProxy := client.NewDNSProxy(dnsCfg, func(ctx context.Context, target string) (net.Conn, error) {
+			return dialTunnel(ctx, target, false) // DNS upstream over TCP tunnel
+		})
 		go func() { dnsProxy.ListenAndServe(ctx) }() //nolint:errcheck
 	}
 
@@ -171,11 +132,14 @@ func runStart(args []string) {
 	var proxyAddr string
 	if cfg.SocksPort > 0 {
 		proxyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
+		
 		proxyCfg := client.ProxyConfig{
-			ListenAddr:   proxyAddr,
-			EnableSOCKS5: true,
-			EnableHTTP:   true,
-			Logger:       logger,
+			ListenAddr:    proxyAddr,
+			EnableSOCKS5:  true,
+			EnableHTTP:    true,
+			Logger:        logger,
+			BypassDomains: bypassDomains,
+			BypassIPs:     parsedBypassIPs,
 		}
 		proxy := client.NewProxyServer(proxyCfg, dialTunnel)
 		defer proxy.Close()                       //nolint:errcheck
@@ -189,17 +153,21 @@ func runStart(args []string) {
 	defer removePID() //nolint:errcheck
 
 	// Print startup summary
-	printStartBox(cfg, proxyAddr)
+	smartDNS := len(bypassDomains) > 0 || len(parsedBypassIPs) > 0
+	printStartBox(cfg, proxyAddr, smartDNS)
 
 	<-ctx.Done()
 	fmt.Println("\nHiVoid stopped.")
 }
 
 // printStartBox prints the startup information box.
-func printStartBox(cfg *config.Config, proxyAddr string) {
+func printStartBox(cfg *config.Config, proxyAddr string, smartDNS bool) {
 	dns := "disabled"
 	if cfg.DNSPort > 0 {
-		dns = fmt.Sprintf("127.0.0.1:%d → %s", cfg.DNSPort, cfg.DNSUpstream)
+		dns = fmt.Sprintf("127.0.0.1:%d → tunnel %s", cfg.DNSPort, cfg.DNSUpstream)
+		if smartDNS {
+			dns += " (+ direct DNS for bypass)"
+		}
 	}
 	proxy := proxyAddr
 	if proxy == "" {
@@ -220,28 +188,6 @@ func printStartBox(cfg *config.Config, proxyAddr string) {
 }
 
 // connectRetry tries up to 3 times with exponential back-off.
-func connectRetry(ctx context.Context, c *transport.Client, log *zap.Logger) (*session.Session, error) {
-	var last error
-	for i := 1; i <= 3; i++ {
-		s, err := c.Connect(ctx)
-		if err == nil {
-			return s, nil
-		}
-		last = err
-		if i < 3 {
-			wait := time.Duration(i) * time.Second
-			log.Warn("retrying", zap.Int("attempt", i), zap.Duration("wait", wait), zap.Error(err))
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(wait):
-			}
-		}
-	}
-	return nil, fmt.Errorf("after 3 attempts: %w", last)
-}
-
-// upper converts to uppercase using ASCII only.
 func upper(s string) string {
 	b := []byte(s)
 	for i, c := range b {
@@ -250,27 +196,4 @@ func upper(s string) string {
 		}
 	}
 	return string(b)
-}
-
-func shouldRetryWithReconnect(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "proxy connect failed") {
-		return false
-	}
-	for _, key := range []string{
-		"session not active",
-		"open tunnel stream",
-		"connection closed",
-		"application error",
-		"broken pipe",
-		"eof",
-	} {
-		if strings.Contains(msg, key) {
-			return true
-		}
-	}
-	return false
 }
