@@ -12,9 +12,13 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/hivoid-org/hivoid-core/config"
+	"github.com/hivoid-org/hivoid-core/utils"
 )
 
 const usage = `Usage:
+  hivoid-client version                       Show engine version
   hivoid-client start  --config <file.json>   Start the HiVoid proxy tunnel
   hivoid-client stop                          Stop a running HiVoid instance
   hivoid-client status                        Show running state and uptime
@@ -26,6 +30,7 @@ Flags are parsed per-subcommand. Run "hivoid-client <cmd> --help" for details.`
 
 func main() {
 	if len(os.Args) < 2 {
+		fmt.Printf("HiVoid Client v%s (Protocol v%d)\n\n", utils.CoreVersion, config.Version)
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
@@ -34,6 +39,8 @@ func main() {
 	args := os.Args[2:]
 
 	switch sub {
+	case "version":
+		fmt.Printf("HiVoid Client v%s (Protocol v%d)\n", utils.CoreVersion, config.Version)
 	case "start":
 		runStart(args)
 	case "stop":

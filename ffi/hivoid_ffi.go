@@ -244,7 +244,12 @@ func Stop() *C.char {
 	return nil
 }
 
-//export Status
+//export Version
+func Version() *C.char {
+	return C.CString(utils.CoreVersion)
+}
+
+// export Status
 func Status() *C.char {
 	mu.Lock()
 	defer mu.Unlock()
