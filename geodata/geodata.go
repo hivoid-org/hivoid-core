@@ -7,6 +7,7 @@ import (
 
 	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
 	"google.golang.org/protobuf/proto"
+	"strings"
 )
 
 // LoadGeoData parses geoip.dat and geosite.dat for specific tags (e.g., "ir", "category-ads-all").
@@ -91,7 +92,8 @@ func NewGeoMatcher(geoipPath, geositePath string) *GeoMatcher {
 						mask := net.CIDRMask(int(cidr.Prefix), len(ip)*8)
 						nets = append(nets, &net.IPNet{IP: ip, Mask: mask})
 					}
-					m.IPs[geoip.CountryCode] = nets
+					tag := strings.ToUpper(geoip.CountryCode)
+					m.IPs[tag] = append(m.IPs[tag], nets...)
 				}
 			}
 		}
@@ -108,7 +110,8 @@ func NewGeoMatcher(geoipPath, geositePath string) *GeoMatcher {
 							doms = append(doms, domain.Value)
 						}
 					}
-					m.Domains[geosite.CountryCode] = doms
+					tag := strings.ToUpper(geosite.CountryCode)
+					m.Domains[tag] = append(m.Domains[tag], doms...)
 				}
 			}
 		}
@@ -137,7 +140,8 @@ func (m *GeoMatcher) Match(host string, tags []string) bool {
 
 	// 2. Check Domain
 	for _, tag := range tags {
-		for _, pattern := range m.Domains[tag] {
+		tagUpper := strings.ToUpper(tag)
+		for _, pattern := range m.Domains[tagUpper] {
 			if matchHost(pattern, host) {
 				return true
 			}
@@ -151,13 +155,22 @@ func matchHost(pattern, host string) bool {
 	if pattern == "*" {
 		return true
 	}
-	if len(pattern) > 2 && pattern[:2] == "*." {
-		suffix := pattern[1:]
-		return len(host) > len(suffix) && host[len(host)-len(suffix):] == suffix
+	// Case-insensitive comparison for domains
+	p := strings.ToLower(pattern)
+	h := strings.ToLower(host)
+
+	// Explicit wildcard or starting with dot
+	if strings.HasPrefix(p, "*.") {
+		suffix := p[1:] // ".xxx.com"
+		return strings.HasSuffix(h, suffix)
 	}
-	// Also treat plain patterns as suffixes if they start with .
-	if len(pattern) > 0 && pattern[0] == '.' {
-		return len(host) >= len(pattern) && host[len(host)-len(pattern):] == pattern
+	if strings.HasPrefix(p, ".") {
+		return strings.HasSuffix(h, p)
 	}
-	return pattern == host
+
+	// Smart matching: exact OR subdomain
+	if h == p {
+		return true
+	}
+	return strings.HasSuffix(h, "."+p)
 }
