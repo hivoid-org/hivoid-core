@@ -32,6 +32,8 @@ type UserPolicy struct {
 	BytesIn        uint64
 	BytesOut       uint64
 	Enabled        bool
+	BlockedHosts   []string
+	BlockedTags    []string
 }
 
 // Manager manages a pool of active HiVoid sessions.
@@ -89,7 +91,10 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Ses
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	if err := s.PerformHandshakeAsServer(); err != nil {
+	handshakeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if err := s.PerformHandshakeAsServer(handshakeCtx); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("server handshake: %w", err)
 	}
@@ -176,7 +181,10 @@ func (m *Manager) Dial(ctx context.Context, conn *quic.Conn) (*Session, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	if err := s.PerformHandshakeAsClient(); err != nil {
+	handshakeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	if err := s.PerformHandshakeAsClient(handshakeCtx); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("client handshake: %w", err)
 	}

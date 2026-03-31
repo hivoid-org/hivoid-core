@@ -239,13 +239,19 @@ func (s *Session) GetTrafficStats() (uint64, uint64) {
 }
 
 // PerformHandshakeAsClient executes the client-side hybrid key exchange.
-func (s *Session) PerformHandshakeAsClient() error {
-	ctrlStream, err := s.conn.OpenStreamSync(s.ctx)
+func (s *Session) PerformHandshakeAsClient(ctx context.Context) error {
+	ctrlStream, err := s.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return fmt.Errorf("open control stream: %w", err)
 	}
 	s.ctrlStream = ctrlStream
 	s.ctrlReader = bufio.NewReader(ctrlStream)
+
+	// Set a deadline for the entire handshake process on this stream
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = ctrlStream.SetDeadline(deadline)
+	}
+	defer ctrlStream.SetDeadline(time.Time{})
 
 	// --- H3/MASQUE/WebTransport Protocol Wrapper ---
 	if s.requestedObfs == 4 || s.requestedObfs == 5 {
@@ -333,13 +339,19 @@ func (s *Session) PerformHandshakeAsClient() error {
 }
 
 // PerformHandshakeAsServer executes the server-side hybrid key exchange.
-func (s *Session) PerformHandshakeAsServer() error {
-	ctrlStream, err := s.conn.AcceptStream(s.ctx)
+func (s *Session) PerformHandshakeAsServer(ctx context.Context) error {
+	ctrlStream, err := s.conn.AcceptStream(ctx)
 	if err != nil {
 		return fmt.Errorf("accept control stream: %w", err)
 	}
 	s.ctrlStream = ctrlStream
 	s.ctrlReader = bufio.NewReader(ctrlStream)
+
+	// Set a deadline for the entire handshake process on this stream
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = ctrlStream.SetDeadline(deadline)
+	}
+	defer ctrlStream.SetDeadline(time.Time{})
 
 	// Peeking at the first byte of control stream to detect H3 framing.
 	// Standard HiVoid starts with 0x02 (FrameControl).

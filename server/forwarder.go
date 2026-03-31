@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/hivoid-org/hivoid-core/frames"
+	"github.com/hivoid-org/hivoid-core/geodata"
 	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
 	"github.com/quic-go/quic-go"
@@ -55,6 +56,12 @@ type ForwarderConfig struct {
 	UserControls *UserControlManager
 	// DisconnectExpired closes active tunnels when the user expires.
 	DisconnectExpired bool
+	// GeoIPPath is path to geoip.dat.
+	GeoIPPath string
+	// GeoSitePath is path to geosite.dat.
+	GeoSitePath string
+	// BlockedTags is a global list of blocked country codes or categories.
+	BlockedTags []string
 }
 
 // DefaultForwarderConfig returns sensible defaults.
@@ -82,6 +89,7 @@ type Forwarder struct {
 	limiter *ConnectionLimiter
 	users   *UserControlManager
 	runtime atomic.Value // forwarderRuntime
+	geo     atomic.Value // *geodata.GeoMatcher
 }
 
 type forwarderRuntime struct {
@@ -92,6 +100,7 @@ type forwarderRuntime struct {
 	users              map[[16]byte]session.UserPolicy
 	connectionTracking bool
 	disconnectExpired  bool
+	blockedTags        []string
 }
 
 // NewForwarder creates a Forwarder with the given configuration.
@@ -109,6 +118,7 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		limiter: &ConnectionLimiter{},
 		users:   cfg.UserControls,
 	}
+	f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath))
 	f.UpdateRuntime(cfg)
 	return f
 }
@@ -130,11 +140,18 @@ func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
 		users:              users,
 		connectionTracking: cfg.ConnectionTracking,
 		disconnectExpired:  cfg.DisconnectExpired,
+		blockedTags:        append([]string(nil), cfg.BlockedTags...),
 	}
 	if rt.dialTimeout <= 0 {
 		rt.dialTimeout = 10 * time.Second
 	}
 	f.runtime.Store(rt)
+
+	// Update GeoMatcher if paths changed
+	currentGeo := f.geo.Load()
+	if currentGeo == nil || cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
+		f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath))
+	}
 }
 
 // Handler returns a transport.SessionHandler that forwards proxy tunnels.
@@ -216,7 +233,7 @@ func (f *Forwarder) forward(
 	}
 
 	// ACL check
-	if err := f.checkACL(rt, target); err != nil {
+	if err := f.checkACL(rt, userPolicy, target); err != nil {
 		session.SendProxyError(stream, err.Error())
 		stream.CancelRead(quic.StreamErrorCode(0))
 		_ = stream.Close()
@@ -491,18 +508,37 @@ func (f *Forwarder) relayWithControls(
 }
 
 // checkACL returns an error if the target is blocked or not in the allow list.
-func (f *Forwarder) checkACL(rt forwarderRuntime, target string) error {
+func (f *Forwarder) checkACL(rt forwarderRuntime, p session.UserPolicy, target string) error {
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
 		host = target
 	}
 
+	geo := f.geo.Load().(*geodata.GeoMatcher)
+
+	// 1. Global Blocking
 	for _, pattern := range rt.blockedHosts {
 		if matchHost(pattern, host) {
-			return fmt.Errorf("blocked destination: %s", host)
+			return fmt.Errorf("blocked destination (global): %s", host)
+		}
+	}
+	if geo != nil && geo.Match(host, rt.blockedTags) {
+		return fmt.Errorf("blocked category/country (global): %s", host)
+	}
+
+	// 2. Per-User Blocking (Explicit Hosts)
+	for _, pattern := range p.BlockedHosts {
+		if matchHost(pattern, host) {
+			return fmt.Errorf("blocked destination (user): %s", host)
 		}
 	}
 
+	// 3. Per-User Blocking (Geo Tags/Countries/Categories)
+	if geo != nil && geo.Match(host, p.BlockedTags) {
+		return fmt.Errorf("blocked category/country (user): %s", host)
+	}
+
+	// 4. Global Allowlist (if non-empty)
 	if len(rt.allowedHosts) == 0 {
 		return nil
 	}

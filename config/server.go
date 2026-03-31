@@ -30,19 +30,21 @@ type FeaturesSection struct {
 
 // ServerUserConfig contains per-user runtime policy.
 type ServerUserConfig struct {
-	UUID           string `json:"uuid"`
-	Email          string `json:"email"`
-	Enabled        bool   `json:"enabled"`
-	MaxConnections int    `json:"max_connections"`
-	MaxIPs         int    `json:"max_ips"`
-	BindIP         string `json:"bind_ip"`
-	Mode           string `json:"mode"`
-	Obfs           string `json:"obfs"`
-	BandwidthLimit int64  `json:"bandwidth_limit"`
-	DataLimit      int64  `json:"data_limit"`
-	ExpireAt       string `json:"expire_at"`
-	BytesIn        uint64 `json:"bytes_in"`
-	BytesOut       uint64 `json:"bytes_out"`
+	UUID           string   `json:"uuid"`
+	Email          string   `json:"email"`
+	Enabled        bool     `json:"enabled"`
+	MaxConnections int      `json:"max_connections"`
+	MaxIPs         int      `json:"max_ips"`
+	BindIP         string   `json:"bind_ip"`
+	Mode           string   `json:"mode"`
+	Obfs           string   `json:"obfs"`
+	BandwidthLimit int64    `json:"bandwidth_limit"`
+	DataLimit      int64    `json:"data_limit"`
+	ExpireAt       string   `json:"expire_at"`
+	BytesIn        uint64   `json:"bytes_in"`
+	BytesOut       uint64   `json:"bytes_out"`
+	BlockedHosts   []string `json:"blocked_hosts"`
+	BlockedTags    []string `json:"blocked_tags"`
 }
 
 // ServerConfig holds every configurable parameter for a HiVoid server.
@@ -61,6 +63,9 @@ type ServerConfig struct {
 	AllowedUUIDs []string `json:"allowed_uuids"`
 	AntiProbe    bool     `json:"anti_probe"`
 	FallbackAddr string   `json:"fallback_addr"`
+	BlockedTags  []string `json:"blocked_tags"`
+	GeoIPPath    string   `json:"geoip_path"`
+	GeoSitePath  string   `json:"geosite_path"`
 	Debug        bool     `json:"debug"`
 
 	// Dynamic features and user policies.

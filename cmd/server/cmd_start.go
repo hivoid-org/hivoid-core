@@ -69,6 +69,9 @@ func runStart(args []string) {
 	fwdCfg := server.DefaultForwarderConfig()
 	fwdCfg.Logger = logger
 	fwdCfg.UserControls = userControls
+	fwdCfg.GeoIPPath = cfg.GeoIPPath
+	fwdCfg.GeoSitePath = cfg.GeoSitePath
+	fwdCfg.BlockedTags = cfg.BlockedTags
 	forwarder := server.NewForwarder(fwdCfg)
 
 	srv := transport.NewServer(transport.ServerConfig{
@@ -112,6 +115,9 @@ func runStart(args []string) {
 			ConnectionTracking:  next.ConnectionTracking,
 			UserControls:        userControls,
 			DisconnectExpired:   next.DisconnectExpired,
+			GeoIPPath:           next.GeoIPPath,
+			GeoSitePath:         next.GeoSitePath,
+			BlockedTags:         next.BlockedTags,
 		})
 		logger.Info("runtime config applied",
 			zap.String("mode", intelligence.ModeFromString(next.Mode).String()),
@@ -253,6 +259,8 @@ func buildRuntimePolicies(cfg *config.ServerConfig, userControls *server.UserCon
 			BytesIn:        bytesIn,
 			BytesOut:       bytesOut,
 			Enabled:        u.Enabled,
+			BlockedHosts:   u.BlockedHosts,
+			BlockedTags:    u.BlockedTags,
 		}
 		if u.Enabled {
 			allowedUUIDs = append(allowedUUIDs, id)

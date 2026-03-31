@@ -49,8 +49,11 @@ HiVoid supports a structured (recommended) JSON schema for clear organization of
   "max_conns": 1000,
   "anti_probe": true,
   "fallback_addr": "127.0.0.1:80",
+  "geoip_path": "/var/lib/hivoid/geoip.dat",
+  "geosite_path": "/var/lib/hivoid/geosite.dat",
   "allowed_hosts": ["*.google.com", "github.com"],
   "blocked_hosts": ["*.ads.doubleclick.net"],
+  "blocked_tags": ["category-ads-all"],
   "users": [
     {
       "uuid": "550e8400-e29b-41d4-a716-446655440000",
@@ -58,6 +61,8 @@ HiVoid supports a structured (recommended) JSON schema for clear organization of
       "enabled": true,
       "max_connections": 5,
       "max_ips": 2,
+      "blocked_hosts": ["x.com"],
+      "blocked_tags": ["us"],
       "bandwidth_limit": 2048,
       "data_limit": 10737418240,
       "expire_at": "2026-12-31T23:59:59Z"
@@ -89,6 +94,8 @@ HiVoid supports a structured (recommended) JSON schema for clear organization of
 - **`anti_probe`**: Protects the server from active scanners. Unauthorized packets are either silently dropped or lead to a "tarpit".
 - **`fallback_addr`**: If an incoming connection identifies as standard HTTP/TLS (not HiVoid), it can be transparently forwarded to this address (e.g., a real web server).
 - **`allowed_hosts` / `blocked_hosts`**: Standard wildcard/domain lists to control where clients can connect through this server.
+- **`geoip_path` / `geosite_path`**: Path to V2Ray data files for mapping IPs and domains to country codes or categories.
+- **`blocked_tags`**: A global list of GeoData tags (e.g., `["ir", "category-ads"]`) to block for all users.
 
 ---
 
@@ -108,6 +115,8 @@ The `users` array allows granular per-client policies.
 | `data_limit` | Total allowed traffic quota (In + Out). | **Bytes** (0=unlimited) |
 | `expire_at` | Account expiration date. | **RFC3339** (ISO 8601) |
 | `mode` / `obfs` | Per-user override for engine behavior. | String |
+| `blocked_hosts` | Explicit per-user blacklist for domains/IPs. | Array of strings |
+| `blocked_tags` | Per-user GeoData filter (e.g. `["ir"]`). | Array of strings |
 
 ---
 

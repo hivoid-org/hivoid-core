@@ -19,6 +19,7 @@ import (
 
 	"github.com/hivoid-org/hivoid-core/client"
 	"github.com/hivoid-org/hivoid-core/config"
+	"github.com/hivoid-org/hivoid-core/geodata"
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
@@ -397,7 +398,7 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
 	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
 		if len(cfg.DirectRoute) > 0 {
-			if err := client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
+			if err := geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
 				alog("HiVoidFFI", "geodata load failed: "+err.Error())
 			}
 		}

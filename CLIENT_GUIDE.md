@@ -66,7 +66,7 @@ HiVoid client configuration defines how the client connects to the server and ha
 ### 3.2 Engine & Performance
 - **`mode`**: Intelligence engine profile (`performance`, `stealth`, `balanced`, `adaptive`).
 - **`obfs`**: Traffic obfuscation layer. Values: `none`, `random`, `http`, `tls`, `masque`, `webtransport`, `ghost`.
-- **`pool_size`**: Number of parallel QUIC connections to establish to the server. Increasing this helps bypass ISP single-stream throttling. Range: `1–16`. Default: `4`.
+- **`pool_size`**: Number of parallel QUIC connections. HiVoid establishes these in parallel for fast startup. If a handshake stalls, it times out after 15s to allow for a quick retry. Range: `1–16`. Default: `4`.
 
 ### 3.3 Local Proxy Settings
 - **`socks_port`**: Local TCP port for the SOCKS5/HTTP dual-protocol proxy. Set to `0` to disable. Default: `1080`.
@@ -81,7 +81,9 @@ HiVoid client configuration defines how the client connects to the server and ha
 - **`bypass_domains`**: A list of domain suffixes (e.g., `.ir`, `localhost`) to route directly (bypassing the tunnel).
 - **`bypass_ips`**: A list of IPs or CIDR notation blocks (e.g., `10.0.0.0/8`) to route locally.
 - **`geoip_path` / `geosite_path`**: Path to official V2Ray configuration database files (`geoip.dat` and `geosite.dat`).
-- **`direct_route`**: A list of countries or tags (e.g., `["ir", "category-ads"]`) to automatically extract from the database files and bypass.
+- **`direct_route`**: A list of country codes or category tags (e.g., `["ir", "category-ads"]`) to bypass local tunnel. 
+  > [!IMPORTANT]
+  > Server-side ACLs/Filters always have the final say. If the server blocks a domain, your client will receive a proxy error even if it's not in your local bypass list.
 
 ---
 

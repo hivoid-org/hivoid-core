@@ -12,6 +12,7 @@ import (
 
 	"github.com/hivoid-org/hivoid-core/client"
 	"github.com/hivoid-org/hivoid-core/config"
+	"github.com/hivoid-org/hivoid-core/geodata"
 	"github.com/hivoid-org/hivoid-core/intelligence"
 	"github.com/hivoid-org/hivoid-core/session"
 	"github.com/hivoid-org/hivoid-core/transport"
@@ -97,7 +98,7 @@ func runStart(args []string) {
 	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
 	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
 		if len(cfg.DirectRoute) > 0 {
-			_ = client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs)
+			_ = geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs)
 			if len(bypassDomains) > len(cfg.BypassDomains) || len(parsedBypassIPs) > 0 {
 				logger.Info("geodata loaded successfully", zap.Int("domains", len(bypassDomains)), zap.Int("ips", len(parsedBypassIPs)))
 			}

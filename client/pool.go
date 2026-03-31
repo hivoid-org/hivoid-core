@@ -44,19 +44,27 @@ func NewSessionPool(ctx context.Context, cfg *config.Config, c *transport.Client
 		sessions: make([]*session.Session, size),
 	}
 
-	// Initial connect for all slots. We tolerate failures and retry in background.
+	// Initial connect for all slots in parallel. We tolerate failures and retry in background.
+	var wg sync.WaitGroup
 	for i := 0; i < size; i++ {
-		sess, err := c.Connect(ctx)
-		if err != nil {
-			if strings.Contains(err.Error(), "data limit reached") || strings.Contains(err.Error(), "0x10") {
-				logger.Fatal("account limit reached (data or duration). connection refused by server.", zap.Error(err))
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			sess, err := c.Connect(ctx)
+			if err != nil {
+				if strings.Contains(err.Error(), "data limit reached") || strings.Contains(err.Error(), "0x10") {
+					logger.Fatal("account limit reached (data or duration). connection refused by server.", zap.Error(err))
+				}
+				logger.Warn("pool: failed to dial initial session, will retry", zap.Int("slot", slot), zap.Error(err))
+			} else {
+				p.mu.Lock()
+				p.sessions[slot] = sess
+				p.mu.Unlock()
+				logger.Debug("pool: session established", zap.Int("slot", slot))
 			}
-			logger.Warn("pool: failed to dial initial session, will retry", zap.Int("slot", i), zap.Error(err))
-		} else {
-			p.sessions[i] = sess
-			logger.Debug("pool: session established", zap.Int("slot", i))
-		}
+		}(i)
 	}
+	wg.Wait()
 
 	// Verify at least one session is up initially to throw connection error quickly if network is down
 	if !p.hasActive() {
