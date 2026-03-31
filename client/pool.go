@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,9 @@ func NewSessionPool(ctx context.Context, cfg *config.Config, c *transport.Client
 	for i := 0; i < size; i++ {
 		sess, err := c.Connect(ctx)
 		if err != nil {
+			if strings.Contains(err.Error(), "data limit reached") || strings.Contains(err.Error(), "0x10") {
+				logger.Fatal("account limit reached (data or duration). connection refused by server.", zap.Error(err))
+			}
 			logger.Warn("pool: failed to dial initial session, will retry", zap.Int("slot", i), zap.Error(err))
 		} else {
 			p.sessions[i] = sess
@@ -160,6 +164,9 @@ func (p *SessionPool) keepaliveLoop() {
 				}
 
 				if err != nil {
+					if strings.Contains(err.Error(), "data limit reached") || strings.Contains(err.Error(), "0x10") {
+						p.logger.Fatal("account limit reached (data or duration). connection refused by server.", zap.Error(err))
+					}
 					p.logger.Warn("pool: reconnect failed", zap.Int("slot", i), zap.Error(err))
 					// Keep it nil so it gets retried in the next tick
 					p.sessions[i] = nil

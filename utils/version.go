@@ -1,6 +1,6 @@
 package utils
 
-const CoreVersion = "0.10.0"
+const CoreVersion = "v0.10.1"
 
 // Version returns the CoreVersion string.
 func Version() string {

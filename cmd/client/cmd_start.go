@@ -170,17 +170,17 @@ func printStartBox(cfg *config.Config, proxyAddr string, smartDNS bool) {
 		proxy = "disabled"
 	}
 
-	fmt.Printf("\n┌─────────────────────────────────────────────────┐\n")
-	fmt.Printf("│  HiVoid  %-38s│\n", "— "+cfg.Name)
-	fmt.Printf("├─────────────────────────────────────────────────┤\n")
-	fmt.Printf("│  Server:   %-37s│\n", cfg.ServerAddr())
-	fmt.Printf("│  SOCKS5:   %-37s│\n", proxy)
-	fmt.Printf("│  DNS:      %-37s│\n", dns)
-	fmt.Printf("│  Mode:     %-37s│\n", upper(cfg.Mode))
-	fmt.Printf("│  Obfs:     %-37s│\n", upper(cfg.Obfs))
-	fmt.Printf("├─────────────────────────────────────────────────┤\n")
-	fmt.Printf("│  Press Ctrl+C or run 'hivoid-client stop'.      │\n")
-	fmt.Printf("└─────────────────────────────────────────────────┘\n\n")
+	fmt.Printf("\n======================================================\n")
+	fmt.Printf("  HiVoid — %s\n", cfg.Name)
+	fmt.Printf("======================================================\n")
+	fmt.Printf("  Server:   %s\n", cfg.ServerAddr())
+	fmt.Printf("  SOCKS5:   %s\n", proxy)
+	fmt.Printf("  DNS:      %s\n", dns)
+	fmt.Printf("  Mode:     %s\n", upper(cfg.Mode))
+	fmt.Printf("  Obfs:     %s\n", upper(cfg.Obfs))
+	fmt.Printf("======================================================\n")
+	fmt.Printf("  Press Ctrl+C or run 'hivoid-client stop'.\n")
+	fmt.Printf("======================================================\n\n")
 }
 
 // connectRetry tries up to 3 times with exponential back-off.
