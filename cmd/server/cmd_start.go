@@ -248,6 +248,7 @@ func buildRuntimePolicies(cfg *config.ServerConfig, userControls *server.UserCon
 			MaxIPs:         u.MaxIPs,
 			BindIP:         u.BindIP,
 			BandwidthLimit: u.BandwidthLimit,
+			DataLimit:      u.DataLimit,
 			ExpireAtUnix:   parseExpireAt(u.ExpireAt),
 			BytesIn:        bytesIn,
 			BytesOut:       bytesOut,

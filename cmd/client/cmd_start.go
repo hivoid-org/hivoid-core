@@ -97,14 +97,10 @@ func runStart(args []string) {
 	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
 	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
 		if len(cfg.DirectRoute) > 0 {
-			logger.Info("loading v2ray geodata for domestic bypass", zap.Strings("tags", cfg.DirectRoute))
-			if err := client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
-				logger.Warn("failed to load geodata", zap.Error(err))
-			} else {
+			_ = client.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs)
+			if len(bypassDomains) > len(cfg.BypassDomains) || len(parsedBypassIPs) > 0 {
 				logger.Info("geodata loaded successfully", zap.Int("domains", len(bypassDomains)), zap.Int("ips", len(parsedBypassIPs)))
 			}
-		} else {
-			logger.Warn("geoip_path or geosite_path provided but no direct_route tags specified")
 		}
 	}
 

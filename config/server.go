@@ -39,6 +39,7 @@ type ServerUserConfig struct {
 	Mode           string `json:"mode"`
 	Obfs           string `json:"obfs"`
 	BandwidthLimit int64  `json:"bandwidth_limit"`
+	DataLimit      int64  `json:"data_limit"`
 	ExpireAt       string `json:"expire_at"`
 	BytesIn        uint64 `json:"bytes_in"`
 	BytesOut       uint64 `json:"bytes_out"`
@@ -196,6 +197,9 @@ func (c *ServerConfig) ValidateServer() error {
 		}
 		if u.BandwidthLimit < 0 {
 			errs = append(errs, fmt.Sprintf("users[%d].bandwidth_limit: must be >= 0, got %d", row, u.BandwidthLimit))
+		}
+		if u.DataLimit < 0 {
+			errs = append(errs, fmt.Sprintf("users[%d].data_limit: must be >= 0, got %d", row, u.DataLimit))
 		}
 		if u.Mode != "" && !validModes[strings.ToLower(u.Mode)] {
 			errs = append(errs, fmt.Sprintf("users[%d].mode: unknown value %q", row, u.Mode))

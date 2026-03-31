@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	github.com/adrg/xdg v0.5.3 // indirect
+	github.com/adrg/xdg v0.5.3 // indirect 
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

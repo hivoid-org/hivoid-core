@@ -20,6 +20,7 @@ type userState struct {
 	expireAt   atomic.Int64 // unix seconds, 0 = never
 	bytesIn    atomic.Uint64
 	bytesOut   atomic.Uint64
+	dataLimit  atomic.Int64 // volume limit, 0 = unlimited
 	bandwidth  *tokenBucket
 }
 
@@ -55,6 +56,7 @@ func (m *UserControlManager) ApplyPolicies(policies map[[16]byte]session.UserPol
 		st.email.Store(p.Email)
 		st.enabled.Store(p.Enabled)
 		st.expireAt.Store(p.ExpireAtUnix)
+		st.dataLimit.Store(p.DataLimit)
 		st.bandwidth.SetKBytesPerSec(p.BandwidthLimit)
 		if st.bytesIn.Load() == 0 && p.BytesIn > 0 {
 			st.bytesIn.Store(p.BytesIn)
@@ -77,6 +79,10 @@ func (m *UserControlManager) AllowNewConnection(uuid [16]byte) error {
 	exp := st.expireAt.Load()
 	if exp > 0 && time.Now().Unix() > exp {
 		return fmt.Errorf("user expired")
+	}
+	limit := st.dataLimit.Load()
+	if limit > 0 && st.bytesIn.Load()+st.bytesOut.Load() >= uint64(limit) {
+		return fmt.Errorf("data limit reached")
 	}
 	return nil
 }

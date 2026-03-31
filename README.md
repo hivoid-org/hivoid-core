@@ -4,10 +4,14 @@
   <img src="https://raw.githubusercontent.com/hivoid-org/hivoid-core/refs/heads/main/logo/hi-logo-white-transparent.png" alt="Hi Void Logo" width="200" />
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/version-v0.10.0-blue.svg" />
+  <img src="https://img.shields.io/badge/license-MPL--2.0-green.svg" />
+  <img src="https://img.shields.io/badge/platform-cross--platform-blue.svg" />
+  <img src="https://img.shields.io/badge/go-1.24+-00ADD8?logo=go" />
+  <img src="https://img.shields.io/badge/status-beta-yellow.svg" />
+</p>
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
-
-- **Version:** `v0.9.1`
-- **License:** `MPL-2.0`
 
 ---
 

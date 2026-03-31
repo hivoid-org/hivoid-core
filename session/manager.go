@@ -27,6 +27,7 @@ type UserPolicy struct {
 	MaxIPs         int
 	BindIP         string
 	BandwidthLimit int64
+	DataLimit      int64
 	ExpireAtUnix   int64
 	BytesIn        uint64
 	BytesOut       uint64
@@ -121,7 +122,7 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Ses
 			_ = s.CloseWithError(0x10, "account expired")
 			return nil, fmt.Errorf("account expired")
 		}
-		if p.BandwidthLimit > 0 && p.BytesIn+p.BytesOut >= uint64(p.BandwidthLimit) {
+		if p.DataLimit > 0 && p.BytesIn+p.BytesOut >= uint64(p.DataLimit) {
 			_ = s.CloseWithError(0x10, "data limit reached")
 			return nil, fmt.Errorf("data limit reached")
 		}
@@ -392,10 +393,10 @@ func (m *Manager) EnforceQuotas() {
 		}
 
 		// Volume check
-		if p.BandwidthLimit > 0 {
+		if p.DataLimit > 0 {
 			total := p.BytesIn + p.BytesOut + liveUsage[uuid]
-			if total >= uint64(p.BandwidthLimit) {
-				m.logger.Info("disconnecting user: quota reached", zap.String("email", p.Email), zap.Uint64("limit", uint64(p.BandwidthLimit)))
+			if total >= uint64(p.DataLimit) {
+				m.logger.Info("disconnecting user: quota reached", zap.String("email", p.Email), zap.Uint64("limit", uint64(p.DataLimit)))
 				_ = s.CloseWithError(0x10, "data limit reached")
 			}
 		}
