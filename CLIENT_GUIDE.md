@@ -78,12 +78,15 @@ HiVoid client configuration defines how the client connects to the server and ha
 - **`cert_pin`**: Hex-encoded SHA-256 fingerprint of the expected server TLS certificate. If set, the client only trusts this specific certificate.
 
 ### 3.5 Smart Routing (Bypass)
-- **`bypass_domains`**: A list of domain suffixes (e.g., `.ir`, `localhost`) to route directly (bypassing the tunnel).
+- **`bypass_domains`**: A list of domain suffixes (e.g., `.com`, `localhost`) to route directly (bypassing the tunnel).
+  > [!TIP]
+  > HiVoid supports **Smart Domain Matching**. If you add `example.com` to your bypass list, `www.example.com` and all subdomains will also bypass the tunnel automatically.
 - **`bypass_ips`**: A list of IPs or CIDR notation blocks (e.g., `10.0.0.0/8`) to route locally.
 - **`geoip_path` / `geosite_path`**: Path to official V2Ray configuration database files (`geoip.dat` and `geosite.dat`).
-- **`direct_route`**: A list of country codes or category tags (e.g., `["ir", "category-ads"]`) to bypass local tunnel. 
+- **`direct_route`**: A list of country codes or category tags (e.g., `["us", "category-ads"]`) to bypass local tunnel. 
+
   > [!IMPORTANT]
-  > Server-side ACLs/Filters always have the final say. If the server blocks a domain, your client will receive a proxy error even if it's not in your local bypass list.
+  > **Server-Side Authority**: If the server has a blocked tag (e.g., `category-ads`) configured, the domain will be blocked even if it is not in your local bypass/direct lists. The server's security policy always has the final say.
 
 ---
 

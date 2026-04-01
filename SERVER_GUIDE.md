@@ -8,7 +8,7 @@ This document provides a comprehensive guide for configuring and deploying the H
 
 The HiVoid server is managed through a sub-command based CLI.
 
-### Basic Commands
+### 1.1 Basic Commands
 - **Start the server:**
   ```bash
   hivoid-server start --config server.json
@@ -17,7 +17,15 @@ The HiVoid server is managed through a sub-command based CLI.
   ```bash
   hivoid-server stop
   ```
-- **Check status:**
+- **Force Reconnect (Shock):**
+  ```bash
+  hivoid-server shock
+  ```
+- **List Active Clients:**
+  ```bash
+  hivoid-server list
+  ```
+- **Check Status:**
   ```bash
   hivoid-server status
   ```
@@ -141,8 +149,11 @@ Modes control how the intelligence engine shapes traffic:
 
 ---
 
-## 7. Troubleshooting
+## 7. Troubleshooting & Diagnostics
 
+- **List Active Sessions:** Use `hivoid-server list` to see high-level session diagnostics (UUID, Email, Uptime, Traffic) for all currently connected clients.
+- **GeoData Diagnostics:** During startup/reload, check logs for `geo filter` messages to verify if your tags (like `category-ads`) were loaded correctly.
+- **Smart Reload:** Updating user policies (limits, UUIDs, tags) is instantaneous and does not interrupt existing sessions. The GeoData database is only reloaded if the file paths change.
 - **Validation Errors:** If the JSON is invalid, the server will fail to start and print a detailed validation report showing exactly which field (and user index) caused the error.
 - **Log Files:** Check logs for "handshake failed" messages which usually indicate a UUID mismatch or expired certificate.
 - **Hot Reload:** When updating the config file, always check `hivoid-server status` to ensure the new configuration was accepted.
