@@ -118,7 +118,20 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		limiter: &ConnectionLimiter{},
 		users:   cfg.UserControls,
 	}
-	f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath))
+	geoMatcher := geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath, logger)
+	f.geo.Store(geoMatcher)
+
+	// Log diagnostic info for blocked_tags
+	if len(cfg.BlockedTags) > 0 {
+		for _, tag := range cfg.BlockedTags {
+			logger.Info("geo filter: blocked_tag configured",
+				zap.String("tag", tag),
+				zap.Int("domains", geoMatcher.TagDomainCount(tag)),
+				zap.Int("ips", geoMatcher.TagIPCount(tag)),
+			)
+		}
+	}
+
 	f.UpdateRuntime(cfg)
 	return f
 }
@@ -150,7 +163,7 @@ func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
 	// Update GeoMatcher if paths changed
 	currentGeo := f.geo.Load()
 	if currentGeo == nil || cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
-		f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath))
+		f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath, f.logger))
 	}
 }
 
@@ -514,7 +527,10 @@ func (f *Forwarder) checkACL(rt forwarderRuntime, p session.UserPolicy, target s
 		host = target
 	}
 
-	geo := f.geo.Load().(*geodata.GeoMatcher)
+	var geo *geodata.GeoMatcher
+	if v := f.geo.Load(); v != nil {
+		geo = v.(*geodata.GeoMatcher)
+	}
 
 	// 1. Global Blocking
 	for _, pattern := range rt.blockedHosts {
