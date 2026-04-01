@@ -293,7 +293,7 @@ type SessionSnapshot struct {
 	TrafficOut uint64    `json:"traffic_out"`
 }
 
-// GetActiveSnapshots returns a list of all current active sessions.
+// GetActiveSnapshots returns a list of current active clients (grouped by UUID and IP).
 func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 	m.mu.RLock()
 	sessions := make([]*Session, 0, len(m.sessions))
@@ -303,26 +303,53 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 	policies := m.userPolicies
 	m.mu.RUnlock()
 
-	out := make([]SessionSnapshot, 0, len(sessions))
+	type clientKey struct {
+		uuid [16]byte
+		ip   string
+	}
+
+	// Group sessions by client (UUID + IP)
+	groups := make(map[clientKey]*SessionSnapshot)
 	now := time.Now()
+
 	for _, s := range sessions {
 		uuid := s.ClientUUID()
-		uuidStr := hex.EncodeToString(uuid[:])
-		email := "unknown"
-		if p, ok := policies[uuid]; ok {
-			email = p.Email
-		}
+		remoteIP, _, _ := net.SplitHostPort(s.Connection().RemoteAddr().String())
+		key := clientKey{uuid: uuid, ip: remoteIP}
 
-		out = append(out, SessionSnapshot{
-			ID:         s.id.String(),
-			UUID:       uuidStr,
-			Email:      email,
-			RemoteAddr: s.Connection().RemoteAddr().String(),
-			StartTime:  s.StartTime(),
-			Duration:   now.Sub(s.StartTime()).Truncate(time.Second).String(),
-			TrafficIn:  s.TrafficRecv.Load(),
-			TrafficOut: s.TrafficSent.Load(),
-		})
+		if snap, ok := groups[key]; ok {
+			// Aggregate traffic
+			snap.TrafficIn += s.TrafficRecv.Load()
+			snap.TrafficOut += s.TrafficSent.Load()
+			// Keep earliest StartTime for duration
+			if s.StartTime().Before(snap.StartTime) {
+				snap.StartTime = s.StartTime()
+				snap.Duration = now.Sub(s.StartTime()).Truncate(time.Second).String()
+			}
+			// (Optional) We could count sub-sessions here if needed
+		} else {
+			uuidStr := hex.EncodeToString(uuid[:])
+			email := "unknown"
+			if p, ok := policies[uuid]; ok {
+				email = p.Email
+			}
+
+			groups[key] = &SessionSnapshot{
+				ID:         s.id.String(),
+				UUID:       uuidStr,
+				Email:      email,
+				RemoteAddr: remoteIP,
+				StartTime:  s.StartTime(),
+				Duration:   now.Sub(s.StartTime()).Truncate(time.Second).String(),
+				TrafficIn:  s.TrafficRecv.Load(),
+				TrafficOut: s.TrafficSent.Load(),
+			}
+		}
+	}
+
+	out := make([]SessionSnapshot, 0, len(groups))
+	for _, snap := range groups {
+		out = append(out, *snap)
 	}
 	return out
 }

@@ -44,23 +44,17 @@ func runList(args []string) {
 		return
 	}
 
-	fmt.Printf("Active Sessions (%d):\n\n", len(snapshots))
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Printf("Active Clients (Grouped by UUID+IP: %d):\n\n", len(snapshots))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	// Header
-	fmt.Fprintln(w, "EMAIL\tUUID\tREMOTE ADDR\tDURATION\tIN / OUT")
-	fmt.Fprintln(w, "-----\t----\t-----------\t--------\t--------")
+	fmt.Fprintln(w, "EMAIL\tUUID\tREMOTE IP\tDURATION\tIN / OUT")
+	fmt.Fprintln(w, "-----\t----\t---------\t--------\t--------")
 
 	for _, s := range snapshots {
-		// Shorten UUID for display
-		shortUUID := s.UUID
-		if len(shortUUID) > 12 {
-			shortUUID = shortUUID[:8] + "..."
-		}
-
 		traffic := fmt.Sprintf("%.1f MB / %.1f MB", float64(s.TrafficIn)/1024/1024, float64(s.TrafficOut)/1024/1024)
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			s.Email,
-			shortUUID,
+			s.UUID,
 			s.RemoteAddr,
 			s.Duration,
 			traffic,
