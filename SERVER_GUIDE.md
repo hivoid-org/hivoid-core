@@ -24,6 +24,8 @@ The HiVoid server is managed through a sub-command based CLI.
 - **List Active Clients:**
   ```bash
   hivoid-server list
+  # Or for JSON output (useful for panels):
+  hivoid-server list --json
   ```
 - **Check Status:**
   ```bash

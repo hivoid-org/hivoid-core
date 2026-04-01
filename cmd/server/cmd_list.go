@@ -14,29 +14,30 @@ import (
 // runList handles `hivoid-server list`.
 func runList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output in JSON format")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: hivoid-server list")
-		fmt.Fprintln(os.Stderr, "Shows all active sessions and connected clients.")
+		fmt.Fprintln(os.Stderr, "Usage: hivoid-server list [--json]")
+		fmt.Fprintln(os.Stderr, "Shows all active sessions. Use --json for machine-readable output.")
 	}
 	fs.Parse(args) //nolint:errcheck
 
 	resp, err := http.Get("http://127.0.0.1:23080/sessions")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting to server diagnostic API: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Is the HiVoid server running?")
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "Server returned error: %d\n", resp.StatusCode)
-		os.Exit(1)
-	}
 
 	var snapshots []session.SessionSnapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snapshots); err != nil {
 		fmt.Fprintf(os.Stderr, "Error decoding session data: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *jsonOutput {
+		data, _ := json.MarshalIndent(snapshots, "", "  ")
+		fmt.Println(string(data))
+		return
 	}
 
 	if len(snapshots) == 0 {

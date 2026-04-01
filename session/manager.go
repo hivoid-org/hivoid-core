@@ -318,17 +318,17 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 		key := clientKey{uuid: uuid, ip: remoteIP}
 
 		if snap, ok := groups[key]; ok {
-			// Aggregate traffic
 			snap.TrafficIn += s.TrafficRecv.Load()
 			snap.TrafficOut += s.TrafficSent.Load()
-			// Keep earliest StartTime for duration
 			if s.StartTime().Before(snap.StartTime) {
 				snap.StartTime = s.StartTime()
 				snap.Duration = now.Sub(s.StartTime()).Truncate(time.Second).String()
 			}
-			// (Optional) We could count sub-sessions here if needed
 		} else {
-			uuidStr := hex.EncodeToString(uuid[:])
+			fullHex := hex.EncodeToString(uuid[:])
+			uuidStr := fmt.Sprintf("%s-%s-%s-%s-%s", 
+				fullHex[0:8], fullHex[8:12], fullHex[12:16], fullHex[16:20], fullHex[20:])
+
 			email := "unknown"
 			if p, ok := policies[uuid]; ok {
 				email = p.Email
