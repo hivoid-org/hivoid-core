@@ -41,6 +41,7 @@ type Manager struct {
 	mu       sync.RWMutex
 	sessions map[ID]*Session
 	logger   *zap.Logger
+	name     string // Optional server name/label
 
 	// Defaults applied to new sessions
 	mode     intelligence.Mode
@@ -63,13 +64,28 @@ type Manager struct {
 // NewManager creates a Manager.
 func NewManager(isClient bool, mode intelligence.Mode, logger *zap.Logger) *Manager {
 	return &Manager{
-		sessions: make(map[ID]*Session),
-		userIPs:  make(map[[16]byte]map[string]int),
-		logger:   logger,
-		mode:     mode,
-		obfsCfg:  obfuscation.DefaultConfig(),
-		isClient: isClient,
+		sessions:     make(map[ID]*Session),
+		userIPs:      make(map[[16]byte]map[string]int),
+		logger:       logger,
+		mode:         mode,
+		obfsCfg:      obfuscation.DefaultConfig(),
+		isClient:     isClient,
+		userPolicies: make(map[[16]byte]UserPolicy),
 	}
+}
+
+// SetName sets the display name for this server instance (used in diagnostic reports).
+func (m *Manager) SetName(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.name = name
+}
+
+// Name returns the manager's name.
+func (m *Manager) Name() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.name
 }
 
 // AcceptAndHandshake wraps a newly accepted QUIC connection into a Session,
@@ -283,6 +299,7 @@ func (m *Manager) SetObfuscation(cfg obfuscation.Config) {
 
 // SessionSnapshot contains diagnostic info for an active session.
 type SessionSnapshot struct {
+	ConfigName string    `json:"config_name"`
 	ID         string    `json:"id"`
 	UUID       string    `json:"uuid"`
 	Email      string    `json:"email"`
@@ -301,6 +318,7 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 		sessions = append(sessions, s)
 	}
 	policies := m.userPolicies
+	serverName := m.name
 	m.mu.RUnlock()
 
 	type clientKey struct {
@@ -335,6 +353,7 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 			}
 
 			groups[key] = &SessionSnapshot{
+				ConfigName: serverName,
 				ID:         s.id.String(),
 				UUID:       uuidStr,
 				Email:      email,

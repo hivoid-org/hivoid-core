@@ -47,6 +47,7 @@ HiVoid supports a structured (recommended) JSON schema for clear organization of
     "mode": "adaptive",
     "log_level": "info"
   },
+  "name": "My-HiVoid-Server",
   "security": {
     "cert_file": "/etc/hivoid/cert.pem",
     "key_file": "/etc/hivoid/key.pem"

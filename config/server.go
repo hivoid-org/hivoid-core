@@ -52,6 +52,7 @@ type ServerConfig struct {
 	// Flat schema (legacy and internal normalized form).
 	Server string `json:"server"`
 	Port   int    `json:"port"`
+	Name   string `json:"name"`
 	Obfs   string `json:"obfs"`
 	Cert   string `json:"cert"`
 	Key    string `json:"key"`
