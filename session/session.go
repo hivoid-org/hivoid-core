@@ -79,6 +79,7 @@ type Session struct {
 	id       ID
 	conn     *quic.Conn
 	isClient bool
+	startTime time.Time
 
 	// uuid is the client's identity, sent in ClientHello.
 	// On the client side it is set from Config.UUID before the handshake.
@@ -196,6 +197,7 @@ func New(conn *quic.Conn, cfg Config) (*Session, error) {
 		id:            id,
 		conn:          conn,
 		isClient:      cfg.IsClient,
+		startTime:     time.Now(),
 		uuid:          cfg.UUID,
 		state:         StateHandshaking,
 		rekeyAt:       time.Now().Add(cfg.RekeyInterval),
@@ -229,6 +231,9 @@ func (s *Session) State() State {
 	defer s.mu.RUnlock()
 	return s.state
 }
+
+// StartTime returns when the session was created.
+func (s *Session) StartTime() time.Time { return s.startTime }
 
 // Connection returns the underlying QUIC connection.
 func (s *Session) Connection() *quic.Conn { return s.conn }

@@ -16,10 +16,12 @@ import (
 )
 
 const usage = `Usage:
-  hivoid-server version                       Show engine version
-  hivoid-server start  --config <server.json>   Start the HiVoid server
-  hivoid-server stop                             Stop a running server
-  hivoid-server status                           Show running state and uptime
+  hivoid-server version                         Show engine version
+  hivoid-server start  --config <server.json>     Start the HiVoid server
+  hivoid-server stop                            Stop a running server
+  hivoid-server shock                           Force active clients to reconnect (Shock)
+  hivoid-server list                            List active clients and sessions
+  hivoid-server status                          Show running state and uptime
 
 Flags are parsed per-subcommand. Run "hivoid-server <cmd> --help" for details.`
 
@@ -40,6 +42,10 @@ func main() {
 		runStart(args)
 	case "stop":
 		runStop(args)
+	case "shock":
+		runShock(args)
+	case "list":
+		runList(args)
 	case "status":
 		runStatus(args)
 	case "--help", "-h", "-help", "help":

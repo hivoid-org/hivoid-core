@@ -90,6 +90,10 @@ type Forwarder struct {
 	users   *UserControlManager
 	runtime atomic.Value // forwarderRuntime
 	geo     atomic.Value // *geodata.GeoMatcher
+
+	mu              sync.Mutex
+	lastGeoIPPath   string
+	lastGeoSitePath string
 }
 
 type forwarderRuntime struct {
@@ -118,20 +122,6 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		limiter: &ConnectionLimiter{},
 		users:   cfg.UserControls,
 	}
-	geoMatcher := geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath, logger)
-	f.geo.Store(geoMatcher)
-
-	// Log diagnostic info for blocked_tags
-	if len(cfg.BlockedTags) > 0 {
-		for _, tag := range cfg.BlockedTags {
-			logger.Info("geo filter: blocked_tag configured",
-				zap.String("tag", tag),
-				zap.Int("domains", geoMatcher.TagDomainCount(tag)),
-				zap.Int("ips", geoMatcher.TagIPCount(tag)),
-			)
-		}
-	}
-
 	f.UpdateRuntime(cfg)
 	return f
 }
@@ -160,10 +150,32 @@ func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
 	}
 	f.runtime.Store(rt)
 
-	// Update GeoMatcher if paths changed
+	// Update GeoMatcher only if paths changed
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	pathsChanged := cfg.GeoIPPath != f.lastGeoIPPath || cfg.GeoSitePath != f.lastGeoSitePath
 	currentGeo := f.geo.Load()
-	if currentGeo == nil || cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
-		f.geo.Store(geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath, f.logger))
+
+	if currentGeo == nil || pathsChanged {
+		f.logger.Info("geodata: loading/updating matcher",
+			zap.String("geoip", cfg.GeoIPPath),
+			zap.String("geosite", cfg.GeoSitePath))
+
+		geoMatcher := geodata.NewGeoMatcher(cfg.GeoIPPath, cfg.GeoSitePath, f.logger)
+		f.geo.Store(geoMatcher)
+		f.lastGeoIPPath = cfg.GeoIPPath
+		f.lastGeoSitePath = cfg.GeoSitePath
+
+		// Log diagnostics for global blocked tags
+		if len(cfg.BlockedTags) > 0 {
+			for _, tag := range cfg.BlockedTags {
+				f.logger.Info("geo filter: global blocked_tag status",
+					zap.String("tag", tag),
+					zap.Int("domains", geoMatcher.TagDomainCount(tag)),
+				)
+			}
+		}
 	}
 }
 

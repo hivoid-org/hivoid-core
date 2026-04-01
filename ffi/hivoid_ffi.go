@@ -64,8 +64,6 @@ func InternalProtectSocket(fd int) {
 
 func onSocketCreated(fd int) { InternalProtectSocket(fd) }
 
-// --- FFI EXPORTS ---
-
 //export Start
 func Start(configStr *C.char) *C.char {
 	alog("HiVoidFFI", "Start() called")
@@ -268,12 +266,13 @@ func Status() *C.char {
 	if isRunning {
 		status["uptime"] = int64(time.Since(startTime).Seconds())
 		if hvClient != nil {
-			status["server"] = hvClient.Manager().Count()
+			status["connection_count"] = hvClient.Manager().Count()
 		}
 		if currentSess != nil && currentSess.State() == session.StateActive {
+			status["session_id"] = currentSess.ID().String()
+			status["session_uptime"] = int64(time.Since(currentSess.StartTime()).Seconds())
 			if eng := safeGetEngine(currentSess); eng != nil {
 				snap := eng.Metrics().Snapshot()
-				status["session_id"] = currentSess.ID().String()
 				status["rtt_ms"] = snap.RTT.Milliseconds()
 				status["throughput_bps"] = snap.Throughput
 				status["loss_rate"] = snap.PacketLoss

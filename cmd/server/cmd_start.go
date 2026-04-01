@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -165,7 +167,24 @@ func runStart(args []string) {
 			}
 		}()
 	}
+
+	// Shock (Force Reconnect) Signal Handler (Unix only)
+	setupShockSignal(ctx, srv.Manager(), logger)
 	
+	// Start background diagnostic API (127.0.0.1 only)
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+			data := srv.Manager().GetActiveSnapshots()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(data)
+		})
+		logger.Info("diagnostic api listening", zap.String("addr", "127.0.0.1:23080"))
+		if err := http.ListenAndServe("127.0.0.1:23080", mux); err != nil {
+			logger.Warn("diagnostic api failed", zap.Error(err))
+		}
+	}()
+
 	// Start background quota enforcement
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)

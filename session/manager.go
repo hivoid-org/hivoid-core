@@ -257,11 +257,74 @@ func (m *Manager) CloseAll() {
 	}
 }
 
+// KickAll closes all active sessions with a signal to the client to reconnect.
+// Uses custom error code 0x12 (Reconnect Requested).
+func (m *Manager) KickAll() {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.Unlock()
+
+	m.logger.Info("shock requested: kicking all active sessions", zap.Int("count", len(sessions)))
+	for _, s := range sessions {
+		// 0x12 is a custom internal app error code for "force reconnect"
+		s.CloseWithError(0x12, "reconnect requested by server admin")
+	}
+}
+
 // SetObfuscation applies a new obfuscation config to all future sessions.
 func (m *Manager) SetObfuscation(cfg obfuscation.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.obfsCfg = cfg
+}
+
+// SessionSnapshot contains diagnostic info for an active session.
+type SessionSnapshot struct {
+	ID         string    `json:"id"`
+	UUID       string    `json:"uuid"`
+	Email      string    `json:"email"`
+	RemoteAddr string    `json:"remote_addr"`
+	StartTime  time.Time `json:"start_time"`
+	Duration   string    `json:"duration"`
+	TrafficIn  uint64    `json:"traffic_in"`
+	TrafficOut uint64    `json:"traffic_out"`
+}
+
+// GetActiveSnapshots returns a list of all current active sessions.
+func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
+	m.mu.RLock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	policies := m.userPolicies
+	m.mu.RUnlock()
+
+	out := make([]SessionSnapshot, 0, len(sessions))
+	now := time.Now()
+	for _, s := range sessions {
+		uuid := s.ClientUUID()
+		uuidStr := hex.EncodeToString(uuid[:])
+		email := "unknown"
+		if p, ok := policies[uuid]; ok {
+			email = p.Email
+		}
+
+		out = append(out, SessionSnapshot{
+			ID:         s.id.String(),
+			UUID:       uuidStr,
+			Email:      email,
+			RemoteAddr: s.Connection().RemoteAddr().String(),
+			StartTime:  s.StartTime(),
+			Duration:   now.Sub(s.StartTime()).Truncate(time.Second).String(),
+			TrafficIn:  s.TrafficRecv.Load(),
+			TrafficOut: s.TrafficSent.Load(),
+		})
+	}
+	return out
 }
 
 // SetMode updates the default runtime mode for future sessions.
