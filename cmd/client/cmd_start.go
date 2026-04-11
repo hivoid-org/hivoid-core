@@ -94,12 +94,15 @@ func runStart(args []string) {
 	}
 	defer pool.Close()
 
-	bypassDomains := append([]string{}, cfg.BypassDomains...)
-	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
+	bypassDomains := cfg.EffectiveBypassDomains()
+	parsedBypassIPs := client.ParseBypassIPStrings(cfg.EffectiveBypassIPs(), logger)
+	tags := cfg.EffectiveDirectRouteTags()
 	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
-		if len(cfg.DirectRoute) > 0 {
-			_ = geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs)
-			if len(bypassDomains) > len(cfg.BypassDomains) || len(parsedBypassIPs) > 0 {
+		if len(tags) > 0 {
+			beforeDomains := len(bypassDomains)
+			beforeIPs := len(parsedBypassIPs)
+			_ = geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, tags, &bypassDomains, &parsedBypassIPs)
+			if len(bypassDomains) > beforeDomains || len(parsedBypassIPs) > beforeIPs {
 				logger.Info("geodata loaded successfully", zap.Int("domains", len(bypassDomains)), zap.Int("ips", len(parsedBypassIPs)))
 			}
 		}
@@ -129,7 +132,7 @@ func runStart(args []string) {
 	var proxyAddr string
 	if cfg.SocksPort > 0 {
 		proxyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort)
-		
+
 		proxyCfg := client.ProxyConfig{
 			ListenAddr:    proxyAddr,
 			EnableSOCKS5:  true,

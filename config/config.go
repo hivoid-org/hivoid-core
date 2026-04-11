@@ -10,6 +10,8 @@
 // LoadJSON / Config.SaveJSON for JSON file I/O.
 package config
 
+import "strings"
+
 // Version is the HiVoid protocol version embedded in the URI scheme.
 const Version = 1
 
@@ -51,8 +53,9 @@ type Config struct {
 	// Default: false.
 	Insecure bool `json:"insecure"`
 
-	// CertPin is the hex-encoded SHA-256 fingerprint of the expected server
-	// TLS certificate. Empty string disables pinning.
+	// CertPin is the expected server certificate fingerprint.
+	// Preferred format: "sha256:<64-hex>", legacy "<64-hex>" is also accepted.
+	// Empty string disables pinning.
 	CertPin string `json:"cert_pin"`
 
 	// Name is a human-readable label for this profile (URI fragment #...).
@@ -74,6 +77,18 @@ type Config struct {
 	// DirectRoute specifies which Country/Tags from GeoIP and GeoSite should be bypassed (Direct).
 	// Example: ["us", "category-us"]
 	DirectRoute []string `json:"direct_route,omitempty"`
+
+	// DirectGeoSite specifies geosite tags routed directly.
+	DirectGeoSite []string `json:"direct_geosite,omitempty"`
+
+	// DirectGeoIP specifies geoip tags routed directly.
+	DirectGeoIP []string `json:"direct_geoip,omitempty"`
+
+	// DirectDomains specifies explicit domains routed directly.
+	DirectDomains []string `json:"direct_domains,omitempty"`
+
+	// DirectIPs specifies explicit IP/CIDR values routed directly.
+	DirectIPs []string `json:"direct_ips,omitempty"`
 
 	DirectDNSServers []string `json:"direct_dns_servers,omitempty"`
 
@@ -121,4 +136,45 @@ func (c *Config) withDefaults() {
 // ServerAddr returns "host:port" suitable for dialing.
 func (c *Config) ServerAddr() string {
 	return formatHostPort(c.Server, c.Port)
+}
+
+// EffectiveBypassDomains returns merged direct-domain rules.
+// It combines legacy bypass_domains with direct_domains.
+func (c *Config) EffectiveBypassDomains() []string {
+	return appendUniqueTrimmed(c.BypassDomains, c.DirectDomains)
+}
+
+// EffectiveBypassIPs returns merged direct IP/CIDR rules.
+// It combines legacy bypass_ips with direct_ips.
+func (c *Config) EffectiveBypassIPs() []string {
+	return appendUniqueTrimmed(c.BypassIPs, c.DirectIPs)
+}
+
+// EffectiveDirectRouteTags returns merged geodata tags.
+// It combines legacy direct_route with direct_geosite and direct_geoip.
+func (c *Config) EffectiveDirectRouteTags() []string {
+	out := appendUniqueTrimmed(c.DirectRoute, c.DirectGeoSite)
+	return appendUniqueTrimmed(out, c.DirectGeoIP)
+}
+
+func appendUniqueTrimmed(base []string, extra []string) []string {
+	seen := make(map[string]bool, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, s := range base {
+		t := strings.TrimSpace(s)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	for _, s := range extra {
+		t := strings.TrimSpace(s)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
 }

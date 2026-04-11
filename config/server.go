@@ -28,10 +28,30 @@ type FeaturesSection struct {
 	DisconnectExpired  bool `json:"disconnect_expired"`
 }
 
+// HubConfig configures connection to a master Subscription Hub.
+type HubConfig struct {
+	Endpoint       string `json:"endpoint"`         // e.g., "wss://hub.hivoid.org/api/v1/node"
+	NodeToken      string `json:"node_token"`       // Authentication token
+	SyncIntervalMs int    `json:"sync_interval_ms"` // Telemetry reporting interval in milliseconds
+	Insecure       bool   `json:"insecure"`         // Skip TLS verification (useful for IP endpoints)
+}
+
+// HubOnlyConfig is a simplified configuration for running in stateless Slave Mode.
+type HubOnlyConfig struct {
+	Endpoint       string `json:"endpoint"`
+	NodeToken      string `json:"node_token"`
+	Cert           string `json:"cert"`
+	Key            string `json:"key"`
+	SyncIntervalMs int    `json:"sync_interval_ms"`
+	Insecure       bool   `json:"insecure"`
+	Port           int    `json:"port"` // Optional listen port, defaults to 4433
+}
+
 // ServerUserConfig contains per-user runtime policy.
 type ServerUserConfig struct {
 	UUID           string   `json:"uuid"`
 	Email          string   `json:"email"`
+	CertPin        string   `json:"cert_pin,omitempty"`
 	Enabled        bool     `json:"enabled"`
 	MaxConnections int      `json:"max_connections"`
 	MaxIPs         int      `json:"max_ips"`
@@ -75,6 +95,7 @@ type ServerConfig struct {
 	DisconnectExpired  bool               `json:"-"`
 	LogLevel           string             `json:"-"`
 	Users              []ServerUserConfig `json:"users"`
+	Hub                HubConfig          `json:"hub"` // Master Hub connection settings
 }
 
 // Listen returns "host:port" for the QUIC listener.
@@ -234,6 +255,7 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 		ServerRaw json.RawMessage `json:"server"`
 		Security  SecuritySection `json:"security"`
 		Features  FeaturesSection `json:"features"`
+		HubRaw    HubConfig       `json:"hub"`
 	}
 	aux.alias = (*alias)(c)
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -283,6 +305,11 @@ func (c *ServerConfig) UnmarshalJSON(data []byte) error {
 	c.HotReload = aux.Features.HotReload
 	c.ConnectionTracking = aux.Features.ConnectionTracking
 	c.DisconnectExpired = aux.Features.DisconnectExpired
+
+	// 4. Handle "hub" section
+	if aux.HubRaw.Endpoint != "" {
+		c.Hub = aux.HubRaw
+	}
 
 	return nil
 }

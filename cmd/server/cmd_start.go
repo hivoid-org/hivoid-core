@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -75,6 +76,28 @@ func runStart(args []string) {
 	fwdCfg.GeoSitePath = cfg.GeoSitePath
 	fwdCfg.BlockedTags = cfg.BlockedTags
 	forwarder := server.NewForwarder(fwdCfg)
+	runtimeCfg := *cfg
+	var runtimeMu sync.RWMutex
+	applyForwarderRuntime := func(userPolicies map[[16]byte]session.UserPolicy) {
+		runtimeMu.RLock()
+		snapshot := runtimeCfg
+		runtimeMu.RUnlock()
+
+		forwarder.UpdateRuntime(server.ForwarderConfig{
+			DialTimeout:        10 * time.Second,
+			MaxConnections:     snapshot.MaxConns,
+			AllowedHosts:       snapshot.AllowedHosts,
+			BlockedHosts:       snapshot.BlockedHosts,
+			Logger:             logger,
+			Users:              userPolicies,
+			ConnectionTracking: snapshot.ConnectionTracking,
+			UserControls:       userControls,
+			DisconnectExpired:  snapshot.DisconnectExpired,
+			GeoIPPath:          snapshot.GeoIPPath,
+			GeoSitePath:        snapshot.GeoSitePath,
+			BlockedTags:        snapshot.BlockedTags,
+		})
+	}
 
 	srv := transport.NewServer(transport.ServerConfig{
 		ListenAddr:   listenAddr,
@@ -100,6 +123,10 @@ func runStart(args []string) {
 			return err
 		}
 		allowedUUIDs, userPolicies := buildRuntimePolicies(next, userControls, logger)
+		if cfg.Hub.Endpoint != "" && len(next.Users) == 0 && len(next.AllowedUUIDs) == 0 {
+			userPolicies = srv.Manager().GetPoliciesSnapshot()
+			allowedUUIDs = enabledUUIDsFromPolicies(userPolicies)
+		}
 		srv.Manager().SetMode(intelligence.ModeFromString(next.Mode))
 		srv.Manager().SetObfuscation(session.ObfsConfigForName(next.Obfs))
 		srv.Manager().SetAllowedUUIDs(allowedUUIDs)
@@ -107,20 +134,10 @@ func runStart(args []string) {
 		srv.Manager().RefreshActiveSessionPolicies()
 		userControls.ApplyPolicies(userPolicies)
 
-		forwarder.UpdateRuntime(server.ForwarderConfig{
-			DialTimeout:         10 * time.Second,
-			MaxConnections:      next.MaxConns,
-			AllowedHosts:        next.AllowedHosts,
-			BlockedHosts:        next.BlockedHosts,
-			Logger:              logger,
-			Users:               userPolicies,
-			ConnectionTracking:  next.ConnectionTracking,
-			UserControls:        userControls,
-			DisconnectExpired:   next.DisconnectExpired,
-			GeoIPPath:           next.GeoIPPath,
-			GeoSitePath:         next.GeoSitePath,
-			BlockedTags:         next.BlockedTags,
-		})
+		runtimeMu.Lock()
+		runtimeCfg = *next
+		runtimeMu.Unlock()
+		applyForwarderRuntime(userPolicies)
 		logger.Info("runtime config applied",
 			zap.String("mode", intelligence.ModeFromString(next.Mode).String()),
 			zap.Int("users", len(userPolicies)),
@@ -170,7 +187,29 @@ func runStart(args []string) {
 
 	// Shock (Force Reconnect) Signal Handler (Unix only)
 	setupShockSignal(ctx, srv.Manager(), logger)
-	
+
+	// Start Hub Client if configured
+	var hubClient *server.HubClient
+	if cfg.Hub.Endpoint != "" {
+		if cfg.Hub.NodeToken == "" {
+			logger.Warn("hub endpoint configured but node_token is empty")
+		}
+		hubBaseCfg := *cfg
+		hubBaseCfg.Users = nil
+		hubBaseCfg.AllowedUUIDs = nil
+		hubClient = server.NewHubClient(
+			cfg.Hub,
+			srv.Manager(),
+			userControls,
+			logger,
+			applyRuntime,
+			applyForwarderRuntime,
+			&hubBaseCfg,
+		)
+		hubClient.Start()
+		defer hubClient.Stop()
+	}
+
 	// Start background diagnostic API (127.0.0.1 only)
 	go func() {
 		mux := http.NewServeMux()
@@ -267,6 +306,7 @@ func buildRuntimePolicies(cfg *config.ServerConfig, userControls *server.UserCon
 		userPolicies[id] = session.UserPolicy{
 			UUID:           id,
 			Email:          u.Email,
+			CertPin:        u.CertPin,
 			Mode:           intelligence.ModeFromString(u.Mode),
 			ObfsConfig:     session.ObfsConfigForName(u.Obfs),
 			MaxConnections: u.MaxConnections,
@@ -308,4 +348,14 @@ func parseExpireAt(raw string) int64 {
 		return 0
 	}
 	return t.Unix()
+}
+
+func enabledUUIDsFromPolicies(policies map[[16]byte]session.UserPolicy) [][16]byte {
+	allowed := make([][16]byte, 0, len(policies))
+	for uuid, p := range policies {
+		if p.Enabled {
+			allowed = append(allowed, uuid)
+		}
+	}
+	return allowed
 }

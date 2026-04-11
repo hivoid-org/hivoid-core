@@ -49,7 +49,7 @@ docker buildx build \
     --target artifacts \
     --build-arg VERSION="$VERSION" \
     --output type=local,dest="$OUTPUT_DIR" \
-    --file Dockerfile.ffi \
+    --file docker/Dockerfile.ffi \
     .
 
 # 6. Post-Build: Create a unified SDK zip containing all platform zips

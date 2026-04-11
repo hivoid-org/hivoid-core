@@ -21,6 +21,7 @@ import (
 type UserPolicy struct {
 	UUID           [16]byte
 	Email          string
+	CertPin        string
 	Mode           intelligence.Mode
 	ObfsConfig     obfuscation.Config
 	MaxConnections int
@@ -34,6 +35,10 @@ type UserPolicy struct {
 	Enabled        bool
 	BlockedHosts   []string
 	BlockedTags    []string
+	DirectGeoSite  []string
+	DirectGeoIP    []string
+	DirectDomains  []string
+	DirectIPs      []string
 }
 
 // Manager manages a pool of active HiVoid sessions.
@@ -53,8 +58,13 @@ type Manager struct {
 	// clientMode and clientObfs are sent in ClientHello on outbound connections.
 	clientMode uint8
 	clientObfs uint8
-	// allowedUUIDs is the server-side allowlist (empty = allow all).
+	// allowedUUIDs is the server-side allowlist.
+	// If requireKnownPolicy is false: empty means allow all.
+	// If requireKnownPolicy is true: unknown users are always rejected.
 	allowedUUIDs [][16]byte
+	// requireKnownPolicy enforces fail-closed auth: only UUIDs present in
+	// active userPolicies are accepted.
+	requireKnownPolicy bool
 	// userPolicies are applied after handshake based on client UUID.
 	userPolicies map[[16]byte]UserPolicy
 	// userIPs tracks unique IPs per user: map[UUID] -> map[IP] -> SessionCount
@@ -96,9 +106,10 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Ses
 	cfg.Engine = intelligence.NewEngine(m.mode)
 	cfg.ObfsConfig = m.obfsCfg
 	cfg.AllowedUUIDs = m.allowedUUIDs
+	requireKnownPolicy := m.requireKnownPolicy
 	policies := make(map[[16]byte]UserPolicy, len(m.userPolicies))
 	for k, v := range m.userPolicies {
-		policies[k] = v
+		policies[k] = cloneUserPolicy(v)
 	}
 	m.mu.RUnlock()
 
@@ -115,24 +126,69 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Ses
 		return nil, fmt.Errorf("server handshake: %w", err)
 	}
 
-	if p, ok := policies[s.ClientUUID()]; ok {
+	uuid := s.ClientUUID()
+	requestedMode, requestedObfs := s.ClientRequestedPolicy()
+	if !isValidModeID(requestedMode) {
+		m.logger.Warn("invalid requested mode: rejecting session",
+			zap.String("uuid", hex.EncodeToString(uuid[:])),
+			zap.Uint8("req_mode", requestedMode),
+		)
+		_ = s.CloseWithError(0x11, "invalid requested mode")
+		return nil, fmt.Errorf("invalid requested mode")
+	}
+	if !isValidObfsID(requestedObfs) {
+		m.logger.Warn("invalid requested obfs: rejecting session",
+			zap.String("uuid", hex.EncodeToString(uuid[:])),
+			zap.Uint8("req_obfs", requestedObfs),
+		)
+		_ = s.CloseWithError(0x11, "invalid requested obfs")
+		return nil, fmt.Errorf("invalid requested obfs")
+	}
+
+	p, ok := policies[uuid]
+	if requireKnownPolicy && !ok {
+		m.logger.Warn("unknown uuid without active policy: rejecting session",
+			zap.String("uuid", hex.EncodeToString(uuid[:])),
+		)
+		_ = s.CloseWithError(0x11, "unauthorized uuid")
+		return nil, fmt.Errorf("uuid not found in active policies")
+	}
+
+	if ok {
 		if !p.Enabled {
 			_ = s.CloseWithError(0x11, "user disabled")
 			return nil, fmt.Errorf("user disabled")
 		}
 
-		// Enforce policy: client must request the settings defined by the admin
-		requestedMode, requestedObfs := s.ClientRequestedPolicy()
-		if uint8(p.Mode) != requestedMode || ObfsNameToID(ObfsConfigToName(p.ObfsConfig)) != requestedObfs {
-			id := s.ClientUUID()
-			m.logger.Warn("policy mismatch: rejecting session",
-				zap.String("uuid", hex.EncodeToString(id[:])),
-				zap.Uint8("req_mode", requestedMode),
-				zap.Uint8("policy_mode", uint8(p.Mode)),
-				zap.Uint8("req_obfs", requestedObfs),
-				zap.Uint8("policy_obfs", ObfsNameToID(ObfsConfigToName(p.ObfsConfig))),
+		policyMode := uint8(p.Mode)
+		policyObfs := ObfsNameToID(ObfsConfigToName(p.ObfsConfig))
+		if !isValidModeID(policyMode) {
+			m.logger.Warn("invalid policy mode: rejecting session",
+				zap.String("uuid", hex.EncodeToString(uuid[:])),
+				zap.Uint8("policy_mode", policyMode),
 			)
-			_ = s.conn.CloseWithError(1, "policy mismatch")
+			_ = s.CloseWithError(0x11, "invalid policy mode")
+			return nil, fmt.Errorf("invalid policy mode")
+		}
+		if !isValidObfsID(policyObfs) {
+			m.logger.Warn("invalid policy obfs: rejecting session",
+				zap.String("uuid", hex.EncodeToString(uuid[:])),
+				zap.Uint8("policy_obfs", policyObfs),
+			)
+			_ = s.CloseWithError(0x11, "invalid policy obfs")
+			return nil, fmt.Errorf("invalid policy obfs")
+		}
+
+		// Enforce policy: client must request the settings defined by the admin
+		if policyMode != requestedMode || policyObfs != requestedObfs {
+			m.logger.Warn("policy mismatch: rejecting session",
+				zap.String("uuid", hex.EncodeToString(uuid[:])),
+				zap.Uint8("req_mode", requestedMode),
+				zap.Uint8("policy_mode", policyMode),
+				zap.Uint8("req_obfs", requestedObfs),
+				zap.Uint8("policy_obfs", policyObfs),
+			)
+			_ = s.CloseWithError(0x11, "policy mismatch")
 			return nil, fmt.Errorf("requested policy does not match user configuration")
 		}
 		s.ApplyRuntime(p.Mode, p.ObfsConfig)
@@ -152,13 +208,12 @@ func (m *Manager) AcceptAndHandshake(ctx context.Context, conn *quic.Conn) (*Ses
 		if p.MaxIPs > 0 {
 			ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 			m.mu.Lock()
-			currentIPs := m.userIPs[s.ClientUUID()]
+			currentIPs := m.userIPs[uuid]
 			_, alreadyKnown := currentIPs[ip]
 			if !alreadyKnown && len(currentIPs) >= p.MaxIPs {
 				m.mu.Unlock()
-				clientUUID := s.ClientUUID()
 				m.logger.Warn("IP limit reached",
-					zap.String("uuid", hex.EncodeToString(clientUUID[:])),
+					zap.String("uuid", hex.EncodeToString(uuid[:])),
 					zap.String("new_ip", ip),
 					zap.Int("limit", p.MaxIPs),
 				)
@@ -290,6 +345,26 @@ func (m *Manager) KickAll() {
 	}
 }
 
+// KickUser forcefully closes all active sessions for a specific UUID.
+// Uses custom error code 0x10 to signify policy/limit reached.
+func (m *Manager) KickUser(uuid [16]byte) {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, 4) // typical pool size
+	for _, s := range m.sessions {
+		if s.ClientUUID() == uuid {
+			sessions = append(sessions, s)
+		}
+	}
+	m.mu.Unlock()
+
+	if len(sessions) > 0 {
+		m.logger.Info("kicking specific user", zap.String("uuid", hex.EncodeToString(uuid[:])), zap.Int("sessions", len(sessions)))
+		for _, s := range sessions {
+			s.CloseWithError(0x10, "revoked by hub")
+		}
+	}
+}
+
 // SetObfuscation applies a new obfuscation config to all future sessions.
 func (m *Manager) SetObfuscation(cfg obfuscation.Config) {
 	m.mu.Lock()
@@ -308,6 +383,7 @@ type SessionSnapshot struct {
 	Duration   string    `json:"duration"`
 	TrafficIn  uint64    `json:"traffic_in"`
 	TrafficOut uint64    `json:"traffic_out"`
+	ConnCount  int       `json:"conn_count"`
 }
 
 // GetActiveSnapshots returns a list of current active clients (grouped by UUID and IP).
@@ -317,7 +393,10 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)
 	}
-	policies := m.userPolicies
+	policies := make(map[[16]byte]UserPolicy, len(m.userPolicies))
+	for k, v := range m.userPolicies {
+		policies[k] = cloneUserPolicy(v)
+	}
 	serverName := m.name
 	m.mu.RUnlock()
 
@@ -338,13 +417,14 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 		if snap, ok := groups[key]; ok {
 			snap.TrafficIn += s.TrafficRecv.Load()
 			snap.TrafficOut += s.TrafficSent.Load()
+			snap.ConnCount++
 			if s.StartTime().Before(snap.StartTime) {
 				snap.StartTime = s.StartTime()
 				snap.Duration = now.Sub(s.StartTime()).Truncate(time.Second).String()
 			}
 		} else {
 			fullHex := hex.EncodeToString(uuid[:])
-			uuidStr := fmt.Sprintf("%s-%s-%s-%s-%s", 
+			uuidStr := fmt.Sprintf("%s-%s-%s-%s-%s",
 				fullHex[0:8], fullHex[8:12], fullHex[12:16], fullHex[16:20], fullHex[20:])
 
 			email := "unknown"
@@ -362,6 +442,7 @@ func (m *Manager) GetActiveSnapshots() []SessionSnapshot {
 				Duration:   now.Sub(s.StartTime()).Truncate(time.Second).String(),
 				TrafficIn:  s.TrafficRecv.Load(),
 				TrafficOut: s.TrafficSent.Load(),
+				ConnCount:  1,
 			}
 		}
 	}
@@ -398,11 +479,20 @@ func (m *Manager) SetClientParams(mode intelligence.Mode, obfsName string) {
 
 // SetAllowedUUIDs configures the server-side UUID allowlist.
 // Connections from clients whose UUID is not in the list will be rejected.
-// Pass nil or an empty slice to allow all clients.
+// Pass nil or an empty slice to allow all clients only when
+// requireKnownPolicy is disabled.
 func (m *Manager) SetAllowedUUIDs(uuids [][16]byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.allowedUUIDs = uuids
+}
+
+// SetRequireKnownPolicy enables fail-closed auth for incoming sessions.
+// When true, every connecting UUID must exist in active user policies.
+func (m *Manager) SetRequireKnownPolicy(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requireKnownPolicy = enabled
 }
 
 // SetUserPolicies atomically replaces user policies.
@@ -411,9 +501,50 @@ func (m *Manager) SetUserPolicies(policies map[[16]byte]UserPolicy) {
 	defer m.mu.Unlock()
 	cp := make(map[[16]byte]UserPolicy, len(policies))
 	for k, v := range policies {
-		cp[k] = v
+		cp[k] = cloneUserPolicy(v)
 	}
 	m.userPolicies = cp
+}
+
+// GetPolicy returns the runtime policy for a specific UUID.
+func (m *Manager) GetPolicy(uuid [16]byte) (UserPolicy, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.userPolicies[uuid]
+	if !ok {
+		return UserPolicy{}, false
+	}
+	return cloneUserPolicy(p), true
+}
+
+// GetPoliciesSnapshot returns a copy of all runtime user policies.
+func (m *Manager) GetPoliciesSnapshot() map[[16]byte]UserPolicy {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cp := make(map[[16]byte]UserPolicy, len(m.userPolicies))
+	for k, v := range m.userPolicies {
+		cp[k] = cloneUserPolicy(v)
+	}
+	return cp
+}
+
+func cloneUserPolicy(p UserPolicy) UserPolicy {
+	p.BlockedHosts = cloneStringSlice(p.BlockedHosts)
+	p.BlockedTags = cloneStringSlice(p.BlockedTags)
+	p.DirectGeoSite = cloneStringSlice(p.DirectGeoSite)
+	p.DirectGeoIP = cloneStringSlice(p.DirectGeoIP)
+	p.DirectDomains = cloneStringSlice(p.DirectDomains)
+	p.DirectIPs = cloneStringSlice(p.DirectIPs)
+	return p
+}
+
+func cloneStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 // RefreshActiveSessionPolicies reapplies user policy mode/obfs to active sessions.
@@ -429,6 +560,7 @@ func (m *Manager) RefreshActiveSessionPolicies() {
 	}
 	defaultMode := m.mode
 	defaultObfs := m.obfsCfg
+	requireKnownPolicy := m.requireKnownPolicy
 	m.mu.RUnlock()
 
 	for _, s := range sessions {
@@ -440,6 +572,11 @@ func (m *Manager) RefreshActiveSessionPolicies() {
 				continue
 			}
 			s.ApplyRuntime(p.Mode, p.ObfsConfig)
+			continue
+		}
+		if requireKnownPolicy {
+			m.logger.Info("disconnecting unauthorized user during refresh", zap.String("uuid", hex.EncodeToString(uuid[:])))
+			_ = s.CloseWithError(0x11, "unauthorized uuid")
 			continue
 		}
 		s.ApplyRuntime(defaultMode, defaultObfs)
@@ -454,6 +591,7 @@ func (m *Manager) EnforceQuotas() {
 		policies[k] = v
 	}
 	allowedUUIDs := m.allowedUUIDs
+	requireKnownPolicy := m.requireKnownPolicy
 	m.mu.RUnlock()
 
 	m.mu.Lock()
@@ -474,11 +612,16 @@ func (m *Manager) EnforceQuotas() {
 	for _, s := range activeSessions {
 		uuid := s.ClientUUID()
 		p, ok := policies[uuid]
-
 		// Disconnect if user is disabled
 		if ok && !p.Enabled {
 			m.logger.Info("disconnecting disabled user", zap.String("email", p.Email), zap.String("uuid", hex.EncodeToString(uuid[:])))
 			_ = s.CloseWithError(0x11, "user disabled")
+			continue
+		}
+
+		if !ok && requireKnownPolicy {
+			m.logger.Info("disconnecting unauthorized user (requireKnownPolicy)", zap.String("uuid", hex.EncodeToString(uuid[:])))
+			_ = s.CloseWithError(0x11, "unauthorized uuid")
 			continue
 		}
 
@@ -518,6 +661,17 @@ func (m *Manager) EnforceQuotas() {
 			}
 		}
 	}
+}
+
+func isValidModeID(mode uint8) bool {
+	return mode == uint8(intelligence.ModePerformance) ||
+		mode == uint8(intelligence.ModeStealth) ||
+		mode == uint8(intelligence.ModeBalanced) ||
+		mode == uint8(intelligence.ModeAdaptive)
+}
+
+func isValidObfsID(obfs uint8) bool {
+	return obfs <= 6
 }
 
 // ObfsConfigForName maps a config string to concrete obfuscation parameters.

@@ -43,7 +43,7 @@ func (c *Config) URI() string {
 		q.Set("insecure", "true")
 	}
 	if c.CertPin != "" {
-		q.Set("cert-pin", c.CertPin)
+		q.Set("cert_pin", c.CertPin)
 	}
 	if len(c.BypassDomains) > 0 {
 		q.Set("bypass-domains", strings.Join(c.BypassDomains, ","))

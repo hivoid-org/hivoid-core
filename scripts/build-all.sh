@@ -54,7 +54,7 @@ docker buildx build \
     --target artifacts \
     --build-arg VERSION="$VERSION" \
     --output type=local,dest=./dist \
-    --file Dockerfile \
+    --file docker/Dockerfile \
     .
 
 echo -e "\n${GREEN}==>${NC} Build pipeline completed successfully."

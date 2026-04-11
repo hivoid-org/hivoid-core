@@ -19,5 +19,6 @@ hivoid-*
 github.py
 check.py
 Makefile
-
+TODO
+hub_sync*.md
 dist/andorid/

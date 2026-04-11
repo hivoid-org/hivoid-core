@@ -16,12 +16,12 @@ var validModes = map[string]bool{
 
 // validObfs is the set of accepted obfuscation names.
 var validObfs = map[string]bool{
-	"none":   true,
-	"random": true,
-	"http":   true,
-	"tls":    true,
-	"ghost":  true,
-	"masque": true,
+	"none":         true,
+	"random":       true,
+	"http":         true,
+	"tls":          true,
+	"ghost":        true,
+	"masque":       true,
 	"webtransport": true,
 }
 
@@ -54,7 +54,7 @@ func (c *Config) Validate() error {
 
 	// Obfs
 	if c.Obfs != "" && !validObfs[strings.ToLower(c.Obfs)] {
-		errs = append(errs, fmt.Sprintf("obfs: unknown value %q (allowed: none, random)", c.Obfs))
+		errs = append(errs, fmt.Sprintf("obfs: unknown value %q (allowed: none, random, http, tls, ghost, masque, webtransport)", c.Obfs))
 	}
 
 	// SocksPort
@@ -67,12 +67,17 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Sprintf("dns_port: must be 0–65535, got %d", c.DNSPort))
 	}
 
-	// CertPin — if present must be 64 hex chars (SHA-256)
+	// CertPin — if present must be "sha256:<64-hex>" or legacy "<64-hex>"
 	if c.CertPin != "" {
-		if len(c.CertPin) != 64 {
-			errs = append(errs, fmt.Sprintf("cert_pin: must be 64 hex chars (SHA-256), got %d", len(c.CertPin)))
+		raw := strings.TrimSpace(c.CertPin)
+		hexPart := raw
+		if strings.HasPrefix(strings.ToLower(raw), "sha256:") {
+			hexPart = raw[len("sha256:"):]
+		}
+		if len(hexPart) != 64 {
+			errs = append(errs, fmt.Sprintf("cert_pin: must be sha256:<64 hex> (or 64 hex legacy), got length %d", len(hexPart)))
 		} else {
-			for _, ch := range c.CertPin {
+			for _, ch := range hexPart {
 				if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
 					errs = append(errs, "cert_pin: invalid hex character")
 					break

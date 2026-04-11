@@ -1,12 +1,17 @@
 #!/bin/bash
 # build-android.sh — Build and deploy Android FFI libraries
 
+set -e
+set -o pipefail
+
 echo "----------------------------------------------------------------"
 echo "        HiVoid Android Shared Library Builder (FFI)"
 echo "----------------------------------------------------------------"
 
-read -p "Enter build version (default: dev): " VERSION
-VERSION=${VERSION:-dev}
+if [ -z "${VERSION}" ]; then
+    read -p "Enter build version (default: dev): " INPUT_VERSION
+    VERSION=${INPUT_VERSION:-dev}
+fi
 echo "==> Target Version: ${VERSION}"
 
 mkdir -p dist
@@ -19,7 +24,7 @@ fi
 echo "==> Compiling Android libraries inside Docker..."
 docker buildx build --platform linux/amd64 \
     --build-arg VERSION="${VERSION}" \
-    -f Dockerfile.android \
+    -f docker/Dockerfile.android \
     --output type=local,dest=./dist \
     .
 
@@ -30,7 +35,7 @@ fi
 
 # ── Copy .so files to Android jniLibs ─────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_DIR="$(cd "${SCRIPT_DIR}/../HiVoid-App" 2>/dev/null && pwd)"
+APP_DIR="$(cd "${SCRIPT_DIR}/../../HiVoid-App" 2>/dev/null && pwd)"
 
 # FIX: Removed incorrect JNILIBS definition
 JNILIBS="${APP_DIR}/android/app/src/main/jniLibs"

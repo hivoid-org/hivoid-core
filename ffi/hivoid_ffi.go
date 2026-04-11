@@ -85,7 +85,6 @@ func Start(configStr *C.char) *C.char {
 	return startCore(cfg)
 }
 
-
 //export GetSOCKSPort
 func GetSOCKSPort() C.int { return C.int(1080) }
 
@@ -341,12 +340,24 @@ func parseConfig(s string) (*config.Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("json decode: %w", err)
 	}
-	if cfg.Mode == "" { cfg.Mode = "adaptive" }
-	if cfg.Obfs == "" { cfg.Obfs = "none" }
-	if cfg.SocksPort == 0 { cfg.SocksPort = 1080 }
-	if cfg.DNSUpstream == "" { cfg.DNSUpstream = "8.8.8.8:53" }
-	if cfg.Name == "" { cfg.Name = "hivoid" }
-	if cfg.DNSPort == 0 { cfg.DNSPort = 10853 }
+	if cfg.Mode == "" {
+		cfg.Mode = "adaptive"
+	}
+	if cfg.Obfs == "" {
+		cfg.Obfs = "none"
+	}
+	if cfg.SocksPort == 0 {
+		cfg.SocksPort = 1080
+	}
+	if cfg.DNSUpstream == "" {
+		cfg.DNSUpstream = "8.8.8.8:53"
+	}
+	if cfg.Name == "" {
+		cfg.Name = "hivoid"
+	}
+	if cfg.DNSPort == 0 {
+		cfg.DNSPort = 10853
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -355,14 +366,20 @@ func parseConfig(s string) (*config.Config, error) {
 
 func safeGetEngine(s *session.Session) (result *intelligence.Engine) {
 	defer func() {
-		if r := recover(); r != nil { result = nil }
+		if r := recover(); r != nil {
+			result = nil
+		}
 	}()
 	val := reflect.ValueOf(s).Elem()
 	field := val.FieldByName("engine")
-	if !field.IsValid() { return nil }
+	if !field.IsValid() {
+		return nil
+	}
 	ptr := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	eng, ok := ptr.Interface().(*intelligence.Engine)
-	if !ok || eng == nil { return nil }
+	if !ok || eng == nil {
+		return nil
+	}
 	return eng
 }
 
@@ -393,11 +410,12 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 	currentSess = sess
 	mu.Unlock()
 
-	bypassDomains := append([]string{}, cfg.BypassDomains...)
-	parsedBypassIPs := client.ParseBypassIPStrings(cfg.BypassIPs, logger)
+	bypassDomains := cfg.EffectiveBypassDomains()
+	parsedBypassIPs := client.ParseBypassIPStrings(cfg.EffectiveBypassIPs(), logger)
+	tags := cfg.EffectiveDirectRouteTags()
 	if cfg.GeoIPPath != "" || cfg.GeoSitePath != "" {
-		if len(cfg.DirectRoute) > 0 {
-			if err := geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, cfg.DirectRoute, &bypassDomains, &parsedBypassIPs); err != nil {
+		if len(tags) > 0 {
+			if err := geodata.LoadGeoData(cfg.GeoIPPath, cfg.GeoSitePath, tags, &bypassDomains, &parsedBypassIPs); err != nil {
 				alog("HiVoidFFI", "geodata load failed: "+err.Error())
 			}
 		}
@@ -409,7 +427,9 @@ func runCore(ctx context.Context, cfg *config.Config, trClient *transport.Client
 		mu.Unlock()
 		if s == nil || s.State() != session.StateActive {
 			next, err := connectRetry(dialCtx, trClient, logger)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			mu.Lock()
 			currentSess = next
 			s = next
@@ -465,13 +485,16 @@ func connectRetry(ctx context.Context, c *transport.Client, log *zap.Logger) (*s
 	var last error
 	for i := 1; i <= 5; i++ {
 		s, err := c.Connect(ctx)
-		if err == nil { return s, nil }
+		if err == nil {
+			return s, nil
+		}
 		last = err
 		if i < 5 {
 			wait := time.Duration(i) * time.Second
 			log.Warn("retrying", zap.Int("attempt", i), zap.Duration("wait", wait), zap.Error(err))
 			select {
-			case <-ctx.Done(): return nil, ctx.Err()
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
 		}

@@ -14,14 +14,14 @@ import (
 )
 
 type userState struct {
-	uuid       [16]byte
-	email      atomic.Value // string
-	enabled    atomic.Bool
-	expireAt   atomic.Int64 // unix seconds, 0 = never
-	bytesIn    atomic.Uint64
-	bytesOut   atomic.Uint64
-	dataLimit  atomic.Int64 // volume limit, 0 = unlimited
-	bandwidth  *tokenBucket
+	uuid      [16]byte
+	email     atomic.Value // string
+	enabled   atomic.Bool
+	expireAt  atomic.Int64 // unix seconds, 0 = never
+	bytesIn   atomic.Uint64
+	bytesOut  atomic.Uint64
+	dataLimit atomic.Int64 // volume limit, 0 = unlimited
+	bandwidth *tokenBucket
 }
 
 // UserControlManager tracks per-user traffic, expiry, and bandwidth state.
@@ -280,9 +280,9 @@ func formatUUID(id [16]byte) string {
 }
 
 type tokenBucket struct {
-	rateBytes atomic.Int64 // bytes per second, 0 = unlimited
-	burst     atomic.Int64
-	tokens    atomic.Int64
+	rateBytes  atomic.Int64 // bytes per second, 0 = unlimited
+	burst      atomic.Int64
+	tokens     atomic.Int64
 	lastRefill atomic.Int64 // unix nanos
 }
 
@@ -305,10 +305,17 @@ func (b *tokenBucket) SetKBytesPerSec(kbytesPerSec int64) {
 		b.lastRefill.Store(now)
 		return
 	}
-	burst := rate * 2
-	minBurst := int64(64 * 1024)
+
+	// Keep burst small enough for stable shaping while still avoiding
+	// excessive wakeups at high rates.
+	burst := rate / 5 // ~200ms budget
+	minBurst := int64(1 * 1024)
+	maxBurst := int64(64 * 1024)
 	if burst < minBurst {
 		burst = minBurst
+	}
+	if burst > maxBurst {
+		burst = maxBurst
 	}
 	b.burst.Store(burst)
 	if b.tokens.Load() > burst || b.tokens.Load() == 0 {
@@ -351,25 +358,44 @@ func (b *tokenBucket) WaitN(n int64) {
 	if n <= 0 {
 		return
 	}
-	for {
+	remaining := n
+	for remaining > 0 {
 		rate := b.rateBytes.Load()
 		if rate <= 0 {
 			return
 		}
-		now := time.Now().UnixNano()
-		b.refill(now)
-		available := b.tokens.Load()
-		if available >= n {
-			if b.tokens.CompareAndSwap(available, available-n) {
+
+		burst := b.burst.Load()
+		if burst <= 0 {
+			burst = 1
+		}
+
+		need := remaining
+		if need > burst {
+			need = burst
+		}
+
+		for {
+			rate = b.rateBytes.Load()
+			if rate <= 0 {
 				return
 			}
-			continue
+			now := time.Now().UnixNano()
+			b.refill(now)
+			available := b.tokens.Load()
+			if available >= need {
+				if b.tokens.CompareAndSwap(available, available-need) {
+					remaining -= need
+					break
+				}
+				continue
+			}
+			deficit := need - available
+			waitNs := (deficit * int64(time.Second)) / rate
+			if waitNs < int64(time.Millisecond) {
+				waitNs = int64(time.Millisecond)
+			}
+			time.Sleep(time.Duration(waitNs))
 		}
-		deficit := n - available
-		waitNs := (deficit * int64(time.Second)) / rate
-		if waitNs < int64(time.Millisecond) {
-			waitNs = int64(time.Millisecond)
-		}
-		time.Sleep(time.Duration(waitNs))
 	}
 }

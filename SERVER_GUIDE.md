@@ -1,44 +1,53 @@
-# HiVoid Server Configuration Guide
+# HiVoid Server Configuration Guide (v1.0.0-stable)
 
-This document provides a comprehensive guide for configuring and deploying the HiVoid QUIC proxy server. HiVoid is designed for high-performance, stealthy communication using the QUIC protocol.
+This guide documents the production-grade server commands, configuration schemas, hub integration protocols, and runtime contract details implemented in the HiVoid Core stable release.
 
 ---
 
-## 1. Running the Server
+## 1. Server Commands
 
-The HiVoid server is managed through a sub-command based CLI.
-
-### 1.1 Basic Commands
-- **Start the server:**
+### 1.1 Standard Commands
+- Start from server config:
   ```bash
   hivoid-server start --config server.json
   ```
-- **Stop the server:**
+- Stop running server:
   ```bash
   hivoid-server stop
   ```
-- **Force Reconnect (Shock):**
+- Force reconnect all active sessions:
   ```bash
   hivoid-server shock
   ```
-- **List Active Clients:**
+- List active sessions:
   ```bash
   hivoid-server list
-  # Or for JSON output (useful for panels):
   hivoid-server list --json
   ```
-- **Check Status:**
+- Show status and uptime:
   ```bash
   hivoid-server status
+  ```
+- Print version:
+  ```bash
+  hivoid-server version
+  ```
+
+### 1.2 Hub Slave Mode
+- Start stateless node managed by Hub:
+  ```bash
+  hivoid-server hub --config hub.json
   ```
 
 ---
 
-## 2. Configuration Schema (`server.json`)
+## 2. server.json Schema
 
-HiVoid supports a structured (recommended) JSON schema for clear organization of server, security, and feature settings.
+HiVoid accepts both:
+- structured nested style (recommended)
+- flat legacy style
 
-### 2.1 Recommended Nested Structure
+### 2.1 Recommended Structured Example
 
 ```json
 {
@@ -57,106 +66,230 @@ HiVoid supports a structured (recommended) JSON schema for clear organization of
     "connection_tracking": true,
     "disconnect_expired": true
   },
-  "max_conns": 1000,
+  "max_conns": 0,
   "anti_probe": true,
-  "fallback_addr": "127.0.0.1:80",
+  "fallback_addr": "",
   "geoip_path": "/var/lib/hivoid/geoip.dat",
   "geosite_path": "/var/lib/hivoid/geosite.dat",
-  "allowed_hosts": ["*.google.com", "github.com"],
-  "blocked_hosts": ["*.ads.doubleclick.net"],
-  "blocked_tags": ["category-ads-all"],
+  "allowed_hosts": [],
+  "blocked_hosts": [],
+  "blocked_tags": [],
+  "hub": {
+    "endpoint": "wss://hub.example.com/api/v1/node",
+    "node_token": "token-value",
+    "sync_interval_ms": 5000,
+    "insecure": false
+  },
   "users": [
     {
       "uuid": "550e8400-e29b-41d4-a716-446655440000",
       "email": "user@example.com",
+      "cert_pin": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "enabled": true,
       "max_connections": 5,
       "max_ips": 2,
-      "blocked_hosts": ["x.com"],
-      "blocked_tags": ["us"],
+      "bind_ip": "",
+      "mode": "adaptive",
+      "obfs": "none",
       "bandwidth_limit": 2048,
       "data_limit": 10737418240,
-      "expire_at": "2026-12-31T23:59:59Z"
+      "expire_at": "2026-12-31T23:59:59Z",
+      "bytes_in": 0,
+      "bytes_out": 0,
+      "blocked_hosts": [],
+      "blocked_tags": []
     }
   ]
 }
 ```
 
----
-
-## 3. Field Definitions
-
-### 3.1 Server Section (`server`)
-- **`listen`**: The address and port for the server to listen on (UDP). Use `:port` to listen on all interfaces.
-- **`mode`**: Global default engine mode. Values: `performance`, `stealth`, `balanced`, `adaptive`.
-- **`log_level`**: Logging verbosity (`debug`, `info`, `warn`, `error`).
-
-### 3.2 Security Section (`security`)
-- **`cert_file`**: Path to the PEM-encoded TLS certificate.
-- **`key_file`**: Path to the PEM-encoded TLS private key.
-
-### 3.3 Features Section (`features`)
-- **`hot_reload`**: If `true`, the server watches the config file and applies changes (users, limits, even TLS certificates) without restarting.
-- **`connection_tracking`**: Enables real-time tracking of user connections and traffic.
-- **`disconnect_expired`**: If `true`, users will be forcefully disconnected immediately upon account expiration or reaching data limits.
-
-### 3.4 Global Controls
-- **`max_conns`**: Maximum concurrent global QUIC streams allowed. `0` means unlimited.
-- **`anti_probe`**: Protects the server from active scanners. Unauthorized packets are either silently dropped or lead to a "tarpit".
-- **`fallback_addr`**: If an incoming connection identifies as standard HTTP/TLS (not HiVoid), it can be transparently forwarded to this address (e.g., a real web server).
-- **`allowed_hosts` / `blocked_hosts`**: Standard wildcard/domain lists to control where clients can connect through this server.
-- **`geoip_path` / `geosite_path`**: Path to V2Ray data files for mapping IPs and domains to country codes or categories.
-- **`blocked_tags`**: A global list of GeoData tags (e.g., `["ir", "category-ads"]`) to block for all users.
+### 2.2 Flat Legacy Fields Still Supported
+- server, port, mode, obfs, cert, key
+- max_conns, allowed_hosts, blocked_hosts, allowed_uuids
+- anti_probe, fallback_addr, blocked_tags
+- geoip_path, geosite_path, users, hub
 
 ---
 
-## 4. User Management (`users`)
+## 3. Field Details and Defaults
 
-The `users` array allows granular per-client policies.
+### 3.1 Core Server Fields
+- server.listen (or server + port): bind address for QUIC listener.
+- name: optional label for this server instance. Shows up in diagnostic reports and Hub telemetry.
+- mode: performance, high_performance, stealth, balanced, adaptive.
+- obfs: none, random, http, tls, masque, webtransport, ghost.
+- cert/key: PEM files for TLS.
 
-| Field | Description | Unit / Format |
-| :--- | :--- | :--- |
-| `uuid` | **Required**. Unique identifier for the client. | RFC 4122 UUID v4 |
-| `email` | Descriptive label for the user. | String |
-| `enabled` | Whether the user is allowed to connect. | Boolean |
-| `max_connections`| Concurrent stream limit for this user. | Integer (0=unlimited) |
-| `max_ips` | **Account Sharing Protection**: Limit unique source IPs per UUID. | Integer (0=unlimited) |
-| `bind_ip` | Force all outbound traffic for this user through a specific IP. | IP Address |
-| `bandwidth_limit`| Shared speed limit for all user streams. | **KB/s** (0=unlimited) |
-| `data_limit` | Total allowed traffic quota (In + Out). | **Bytes** (0=unlimited) |
-| `expire_at` | Account expiration date. | **RFC3339** (ISO 8601) |
-| `mode` / `obfs` | Per-user override for engine behavior. | String |
-| `blocked_hosts` | Explicit per-user blacklist for domains/IPs. | Array of strings |
-| `blocked_tags` | Per-user GeoData filter (e.g. `["ir"]`). | Array of strings |
+Defaults applied when omitted:
+- port: 4433
+- cert: cert.pem
+- key: key.pem
+- mode: adaptive
+- obfs: none
+
+### 3.2 Features
+- hot_reload: watch config file and apply runtime updates.
+- connection_tracking: track per-user active connections/usage details.
+- disconnect_expired: disconnect expired or over-quota users in enforcement loop.
+
+### 3.3 Global Access and Routing Controls
+- max_conns: global concurrent connection limit, 0 = unlimited.
+- allowed_hosts: optional global allowlist.
+- blocked_hosts: global explicit blocklist.
+- blocked_tags: global GeoData category/country blocklist.
+- fallback_addr: optional host:port fallback for non-HiVoid traffic classification flow.
+- anti_probe: anti-scanner protection toggle.
+- geoip_path/geosite_path: GeoData sources.
+
+### 3.4 User Policy Fields
+- uuid: required user identity.
+- email: label for ops dashboards/logs.
+- cert_pin: optional expected cert pin metadata per user.
+- enabled: soft allow/deny switch.
+- max_connections: per-user concurrency limit, 0 = unlimited.
+- max_ips: per-user unique source IP limit, 0 = unlimited.
+- bind_ip: optional local egress bind override for that user.
+- mode/obfs: user policy override.
+- bandwidth_limit: per-user shaping value in KB/s for local server.json policies.
+- data_limit: total traffic quota bytes, 0 = unlimited.
+- expire_at: RFC3339 expiry timestamp.
+- bytes_in/bytes_out: persistent counters seed values.
+- blocked_hosts/blocked_tags: per-user ACL/GeoData block rules.
+
+Validation notes:
+- UUID format is strictly checked.
+- Negative values for max/bandwidth/data limits are rejected.
+- Invalid mode/obfs values are rejected.
+- Invalid expire_at RFC3339 format is rejected.
 
 ---
 
-## 5. Traffic Accounting & Persistence
+## 4. Hub Slave Mode (hub.json)
 
-HiVoid tracks traffic with high precision:
-- **`bytes_in`**: Total bytes downloaded by the client.
-- **`bytes_out`**: Total bytes uploaded by the client.
+Use this for stateless node operation where Hub owns policies/config updates.
 
-**Persistence:**  
-Traffic usage is saved to a companion file named `<config-name>.usage.json` periodically and upon graceful shutdown. This allows the server to resume counting after a restart.
+Example:
+
+```json
+{
+  "endpoint": "wss://hub.example.com/api/v1/node",
+  "node_token": "HUB_MASTER_TOKEN",
+  "cert": "certificate.crt",
+  "key": "private.key",
+  "sync_interval_ms": 5000,
+  "insecure": false,
+  "port": 4433
+}
+```
+
+Fields:
+- endpoint: Hub websocket base endpoint.
+- node_token: required auth token.
+- cert/key: local TLS files used by node listener.
+- sync_interval_ms: USAGE send interval in milliseconds.
+- insecure: skip TLS verification for Hub dial (testing/private endpoints).
+- port: node listen port, default 4433.
+
+Behavior:
+- hub mode starts with no local users and waits for Hub SYNC.
+- requireKnownPolicy is enabled; unknown UUIDs are rejected.
+- runtime policy and forwarder controls are updated from Hub events.
 
 ---
 
-## 6. Operation Modes (`mode`)
+## 5. Hub <-> Node Sync Contract
 
-Modes control how the intelligence engine shapes traffic:
-- **`performance`**: Minimal processing, maximum throughput.
-- **`stealth`**: Aggressive timing jitter and packet size normalization to bypass deep packet inspection (DPI).
-- **`balanced`**: High throughput with moderate obfuscation.
-- **`adaptive`** (Default): Dynamically adjusts based on path quality and ISP detection risks.
+### 5.1 Transport and Auth
+- protocol: WebSocket
+- preferred endpoint: /api/v1/nodes/ws
+- backward-compatible fallback: /api/v1/node/ws
+- aliases like /api/v1, /api/v1/node, /api/v1/nodes are normalized by core to the preferred path first
+- auth methods sent by node:
+  - Authorization: Bearer <token>
+  - query token=<token> (fallback)
+- node identity:
+  - X-Node-ID header and node_id query when available
+
+### 5.2 Messages Hub Sends to Node
+- SYNC: user policy snapshot.
+- CONFIG_UPDATE: runtime server config patch.
+- SHOCK: force reconnect all active clients.
+- REVOKE: disconnect specific UUID.
+- TLS_INSTALL: install/sync TLS certificates.
+- GEODATA_INSTALL: install/validate GeoData files.
+
+### 5.3 Messages Node Sends to Hub
+- USAGE:
+  - cumulative bytes_in/bytes_out
+  - request_pool > 0 means online
+  - request_pool = 0 sent on offline transitions to clear presence
+  - connected_at and src_ip are normalized and included
+- COMMAND_ACK:
+  - sent immediately after receiving long-running commands (CONFIG_UPDATE, TLS_INSTALL, GEODATA_INSTALL)
+  - includes request_id, kind, accepted status, and received_at
+- COMMAND_RESULT:
+  - sent when CONFIG_UPDATE finishes (success/failed)
+  - includes request_id, kind, status, message, and optional details
+- INSTALL_RESULT:
+  - includes request_id echo, kind, status, message
+  - TLS success includes cert_pin in root and details
+- REPORT:
+  - sent at startup, periodically, and after relevant runtime changes
+  - carries cert_pin and runtime telemetry fields used by node popup
+  - includes reported_at (RFC3339) and report_interval_ms for freshness tracking
+  - includes popup fields: cpu_usage, ram_usage, uptime, uptime_seconds, connected_at
+  - includes separate process and system metrics:
+    - process_cpu_usage, process_ram_usage_mb, process_ram_usage_bytes
+    - system_cpu_usage, system_ram_usage, system_ram_usage_mb, system_ram_total_mb
+  - keeps backward-compatible nested stats payload (active_connections, cpu_percent, memory_percent, uptime_seconds, memory_bytes)
+
+### 5.4 Hub Policy Compatibility Notes
+- expire_at or expire_at_unix are normalized to runtime unix expiry.
+- enabled and is_active are both accepted.
+- legacy routing fields are merged:
+  - bypass_domains into direct_domains
+  - bypass_ips into direct_ips
+  - direct_route into direct_geosite and direct_geoip
+- for hub policy bandwidth_limit:
+  - current core treats empty bandwidth_unit as kbps and converts to KB/s internally.
 
 ---
 
-## 7. Troubleshooting & Diagnostics
+## 6. Traffic, Persistence, and Diagnostics
 
-- **List Active Sessions:** Use `hivoid-server list` to see high-level session diagnostics (UUID, Email, Uptime, Traffic) for all currently connected clients.
-- **GeoData Diagnostics:** During startup/reload, check logs for `geo filter` messages to verify if your tags (like `category-ads`) were loaded correctly.
-- **Smart Reload:** Updating user policies (limits, UUIDs, tags) is instantaneous and does not interrupt existing sessions. The GeoData database is only reloaded if the file paths change.
-- **Validation Errors:** If the JSON is invalid, the server will fail to start and print a detailed validation report showing exactly which field (and user index) caused the error.
-- **Log Files:** Check logs for "handshake failed" messages which usually indicate a UUID mismatch or expired certificate.
-- **Hot Reload:** When updating the config file, always check `hivoid-server status` to ensure the new configuration was accepted.
+- user usage is tracked continuously in UserControlManager.
+- persisted to companion file:
+  - <config_path>.usage.json
+- flushed periodically and on graceful shutdown.
+
+Diagnostic API:
+- local endpoint: http://127.0.0.1:23080/sessions
+- used by hivoid-server list and list --json
+
+---
+
+## 7. Operations and Troubleshooting
+
+Checklist:
+- server fails at start:
+  - validate cert/key file paths exist
+  - validate JSON and UUID formats
+  - validate mode/obfs names
+- no sessions in list:
+  - verify diagnostic API is reachable on 127.0.0.1:23080
+  - verify users and allowlist policy
+- users disconnected unexpectedly:
+  - check expire_at/data_limit/max_ips/max_connections
+  - check disconnect_expired behavior
+- hub mode not receiving policies:
+  - verify endpoint/token and TLS trust
+  - inspect websocket auth and node_id mapping
+  - verify hub sends SYNC after connect
+- geodata filtering not applied:
+  - verify geoip/geosite paths
+  - check blocked_tags and runtime logs
+
+Useful commands:
+- hivoid-server status
+- hivoid-server list --json
+- hivoid-server shock

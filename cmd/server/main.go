@@ -22,12 +22,13 @@ const usage = `Usage:
   hivoid-server shock                           Force active clients to reconnect (Shock)
   hivoid-server list                            List active clients and sessions
   hivoid-server status                          Show running state and uptime
+  hivoid-server hub                             Start in Hub Slave Mode (stateless)
 
 Flags are parsed per-subcommand. Run "hivoid-server <cmd> --help" for details.`
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Printf("HiVoid Server v%s (Protocol v%d)\n\n", utils.CoreVersion, config.Version)
+		fmt.Printf("HiVoid Server %s (Protocol v%d)\n\n", utils.CoreVersion, config.Version)
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
@@ -37,7 +38,7 @@ func main() {
 
 	switch sub {
 	case "version":
-		fmt.Printf("HiVoid Server v%s (Protocol v%d)\n", utils.CoreVersion, config.Version)
+		fmt.Printf("HiVoid Server %s (Protocol v%d)\n", utils.CoreVersion, config.Version)
 	case "start":
 		runStart(args)
 	case "stop":
@@ -48,6 +49,8 @@ func main() {
 		runList(args)
 	case "status":
 		runStatus(args)
+	case "hub":
+		runHub(args)
 	case "--help", "-h", "-help", "help":
 		fmt.Println(usage)
 	default:

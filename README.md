@@ -5,11 +5,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.11.6-blue.svg" />
+  <img src="https://img.shields.io/badge/version-v1.0.0--stable-blue.svg" />
   <img src="https://img.shields.io/badge/license-MPL--2.0-green.svg" />
   <img src="https://img.shields.io/badge/platform-cross--platform-blue.svg" />
   <img src="https://img.shields.io/badge/go-1.24+-00ADD8?logo=go" />
-  <img src="https://img.shields.io/badge/status-beta-yellow.svg" />
+  <img src="https://img.shields.io/badge/status-stable-blue.svg" />
 </p>
 Hi Void is a high-performance core for secure, scalable, and efficient proxy networking.
 
@@ -20,17 +20,16 @@ Hi Void is a high-performance core for secure, scalable, and efficient proxy net
 - [Server Configuration Guide](SERVER_GUIDE.md) — Detailed reference for server setup.
 - [Client Configuration Guide](CLIENT_GUIDE.md) — Detailed reference for client setup.
 
-## Key Features
-
-- **Next-Gen Obfuscation Suite**: Full support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR/Noise) modes.
-- **Statistical Stealth (Ghost Mode)**: Dynamic CBR engine with adaptive entropy and intelligent noise generation to defeat advanced scalable DPI.
-- **Anti-Probing & Tarpitting**: Immediate silent drop or TCP-like tarpitting for connections that fail strict handshake bounds; fallback redirection (`FallbackAddr`) for unauthorized active scanner probes.
-- **ISP Throttling Evasion (Connection Pooling)**: Client-side round-robin `SessionPool` dynamically spreads streams and UDP associates across independent disjoint QUIC tunnels to completely bypass single-flow speed throttling.
-- **V2Ray Geographic Bypass**: Native parsing of standard `.dat` domain and IP lists (`geoip` & `geosite`), allowing instant domestic bypass routing (out of tunnel) with intelligent latency-free DNS upstreaming.
-- **Comprehensive User Limits**: Server-side Active Quota, Date Expiry, `MaxConnections`, concurrent IP limit (`MaxIPs`), and outgoing egress interface binding (`BindIP`).
-- **UDP Relaying**: Fully compliant SOCKS5 UDP Associate natively multiplexed over QUIC streams.
-- **High-Performance Architecture**: Scalable, authenticated QUIC tunneling using concurrent connection state management.
-- **Dynamic Configuration**: Hot reloading of server listener/TLS certificates and real-time multi-policy user limits snapshotting.
+## Key Features (v1.0.0-stable)
+- **Production-Ready Obfuscation**: Full support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR) modes.
+- **Statistical Stealth (Ghost Mode)**: Advanced CBR engine with adaptive entropy and intelligent noise generation to defeat deep packet inspection.
+- **Active Defense (Anti-Probing)**: Silent drop or TCP-like tarpitting for unauthorized probes, with fallback redirection to standard web services.
+- **ISP Throttling Evasion**: Client-side `SessionPool` dynamically multiplexes traffic across independent QUIC tunnels to bypass single-flow speed caps.
+- **Native Smart Routing**: Built-in GeoData routing using standard `.dat` lists (`geoip` & `geosite`) for zero-latency domestic bypass.
+- **Granular Policy Enforcement**: Server-side Active Quota, Expiry checks, `MaxConnections`, and IP-based concurrency limits.
+- **Hybrid Cryptography**: Post-quantum ready handshakes using X25519 + ML-KEM key exchange.
+- **Hub Integrated**: Fully compatible with HiVoid Hub for centralized policy sync, mass configuration updates, and real-time telemetry.
+- **High-Performance Architecture**: Scalable, authenticated QUIC tunneling for multi-tenant deployments.
 
 ---
 

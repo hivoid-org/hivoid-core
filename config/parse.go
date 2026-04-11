@@ -42,6 +42,10 @@ func ParseURI(raw string) (*Config, error) {
 	}
 
 	q := u.Query()
+	certPin := q.Get("cert_pin")
+	if certPin == "" {
+		certPin = q.Get("cert-pin")
+	}
 
 	cfg := &Config{
 		UUID:        uuid,
@@ -50,7 +54,7 @@ func ParseURI(raw string) (*Config, error) {
 		Mode:        q.Get("mode"),
 		Obfs:        q.Get("obfs"),
 		DNSUpstream: q.Get("dns-up"),
-		CertPin:     q.Get("cert-pin"),
+		CertPin:     certPin,
 		Insecure:    q.Get("insecure") == "true",
 		GeoIPPath:   q.Get("geoip-path"),
 		GeoSitePath: q.Get("geosite-path"),

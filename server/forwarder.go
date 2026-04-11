@@ -88,6 +88,7 @@ type Forwarder struct {
 	wg      sync.WaitGroup
 	limiter *ConnectionLimiter
 	users   *UserControlManager
+	bwLimit sync.Map     // map[[16]byte]*tokenBucket
 	runtime atomic.Value // forwarderRuntime
 	geo     atomic.Value // *geodata.GeoMatcher
 
@@ -132,9 +133,25 @@ func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
 		f.users = cfg.UserControls
 	}
 	users := make(map[[16]byte]session.UserPolicy, len(cfg.Users))
+	activeUsers := make(map[[16]byte]struct{}, len(cfg.Users))
 	for k, v := range cfg.Users {
-		users[k] = v
+		users[k] = cloneForwarderUserPolicy(v)
+		activeUsers[k] = struct{}{}
+		limiter := f.getOrCreateBandwidthLimiter(k)
+		limiter.SetKBytesPerSec(v.BandwidthLimit)
 	}
+
+	f.bwLimit.Range(func(key, _ any) bool {
+		uuid, ok := key.([16]byte)
+		if !ok {
+			return true
+		}
+		if _, exists := activeUsers[uuid]; !exists {
+			f.bwLimit.Delete(uuid)
+		}
+		return true
+	})
+
 	rt := forwarderRuntime{
 		maxConnections:     cfg.MaxConnections,
 		allowedHosts:       append([]string(nil), cfg.AllowedHosts...),
@@ -176,6 +193,38 @@ func (f *Forwarder) UpdateRuntime(cfg ForwarderConfig) {
 				)
 			}
 		}
+	}
+}
+
+func cloneForwarderUserPolicy(p session.UserPolicy) session.UserPolicy {
+	p.BlockedHosts = append([]string(nil), p.BlockedHosts...)
+	p.BlockedTags = append([]string(nil), p.BlockedTags...)
+	p.DirectGeoSite = append([]string(nil), p.DirectGeoSite...)
+	p.DirectGeoIP = append([]string(nil), p.DirectGeoIP...)
+	p.DirectDomains = append([]string(nil), p.DirectDomains...)
+	p.DirectIPs = append([]string(nil), p.DirectIPs...)
+	return p
+}
+
+func (f *Forwarder) getOrCreateBandwidthLimiter(uuid [16]byte) *tokenBucket {
+	if v, ok := f.bwLimit.Load(uuid); ok {
+		return v.(*tokenBucket)
+	}
+	b := newTokenBucket(0)
+	actual, _ := f.bwLimit.LoadOrStore(uuid, b)
+	return actual.(*tokenBucket)
+}
+
+func (f *Forwarder) throttleUser(uuid [16]byte, n int) {
+	if n <= 0 {
+		return
+	}
+	if v, ok := f.bwLimit.Load(uuid); ok {
+		v.(*tokenBucket).WaitN(int64(n))
+		return
+	}
+	if f.users != nil {
+		f.users.Throttle(uuid, n)
 	}
 }
 
@@ -404,9 +453,9 @@ func (f *Forwarder) biRelayUDP(tunnel net.Conn, remote *net.UDPConn, userUUID [1
 				if disconnectExpired && f.users.IsExpired(userUUID) {
 					return
 				}
-				f.users.Throttle(userUUID, n)
 				f.users.AddBytesOut(userUUID, uint64(n))
 			}
+			f.throttleUser(userUUID, n)
 			_, _ = remote.Write(pkt)
 		}
 	}()
@@ -424,6 +473,13 @@ func (f *Forwarder) biRelayUDP(tunnel net.Conn, remote *net.UDPConn, userUUID [1
 			if n <= 0 {
 				continue
 			}
+
+			if f.users != nil {
+				if disconnectExpired && f.users.IsExpired(userUUID) {
+					return
+				}
+			}
+			f.throttleUser(userUUID, n)
 
 			header[0] = byte(n >> 8)
 			header[1] = byte(n)
@@ -499,8 +555,8 @@ func (f *Forwarder) relayWithControls(
 				if disconnectExpired && f.users.IsExpired(userUUID) {
 					return total, fmt.Errorf("user expired")
 				}
-				f.users.Throttle(userUUID, nr)
 			}
+			f.throttleUser(userUUID, nr)
 			written := 0
 			for written < nr {
 				nw, ew := dst.Write(chunk[written:])
