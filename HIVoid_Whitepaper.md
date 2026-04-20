@@ -1,5 +1,5 @@
 # HiVoid: An Adaptive, Intelligence-Driven Network Tunneling Protocol
-**Technical Whitepaper v1.1**
+**Technical Whitepaper v1.2**
 
 ## Abstract
 HiVoid is a next-generation network tunneling protocol designed to provide resilient, high-performance, and stealthy communication in environments characterized by active network interference, censorship, and bandwidth throttling. By combining a modified QUIC transport layer with a real-time statistical "Intelligence Engine," HiVoid dynamically adapts its obfuscation parameters and routing strategies to bypass sophisticated Deep Packet Inspection (DPI) and heuristic-based blocking.
@@ -69,6 +69,7 @@ The client maintains a background "Prober" that periodically tests multiple serv
 ## 5. Security & Cryptography
 HiVoid ensures data integrity and confidentiality through a defense-in-depth approach:
 - **TLS 1.3**: Standard for all QUIC flows.
+- **Certificate Pinning**: Support for SHA-256 certificate fingerprints (CertPin) to prevent MITM attacks even in cases of compromised Root CAs.
 - **Hybrid Key Exchange**: Combines classical elliptic curves with application-level handshakes.
 - **Ephemeral Rekeying**: The Intelligence Engine forces key rotation (Rekeying) every few minutes during high-threat states to minimize the window for offline cryptanalysis.
 - **Identity Obfuscation**: Client UUIDs are embedded within the encrypted handshake, preventing passive observers from identifying users.
@@ -78,8 +79,8 @@ HiVoid ensures data integrity and confidentiality through a defense-in-depth app
 ## 6. Management & Scalability
 For large-scale deployments, HiVoid includes:
 - **The Hub**: A centralized management interface for monitoring active sessions, enforcing quotas, and managing user policies.
-- **The Shock Logic**: A mechanism for server admins to force a global reconnect (Shock) to shift all users to new IP addresses or ports simultaneously.
-- **Persistence**: The Intelligence Engine saves its "network memory" (Baselines and Threat History) to disk, allowing it to resume optimal performance instantly after a restart.
+- **Granular Routing Control**: Integrated GeoData support with dedicated rules for GeoSite, GeoIP, and domain-based routing for traffic isolation.
+- **Persistence**: The Intelligence Engine saves its "network memory" (Baselines and Threat History) to disk (`state.json`), allowing it to resume optimal performance instantly after a restart by skipping the initial learning phase.
 
 ---
 

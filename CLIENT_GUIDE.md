@@ -1,4 +1,4 @@
-# HiVoid Client Configuration Guide (vv1.0.0-stable)
+# HiVoid Client Configuration Guide (v1.2.0-stable)
 
 This document covers the high-performance client commands, configuration fields, URI behavior, and routing semantics implemented in the HiVoid Core stable release.
 
@@ -65,11 +65,17 @@ Example with all currently supported fields:
 {
   "uuid": "550e8400-e29b-41d4-a716-446655440000",
   "server": "vps.example.com",
+  "servers": [
+    "vps1.example.com:4433",
+    "vps2.example.com:4433"
+  ],
   "port": 4433,
 
   "mode": "adaptive",
   "obfs": "none",
   "pool_size": 4,
+  "persistence": true,
+  "state_file": "state.json",
 
   "socks_port": 1080,
   "dns_port": 5353,
@@ -100,13 +106,16 @@ Example with all currently supported fields:
 
 ### 3.1 Required Core Fields
 - uuid: required RFC4122 UUID string.
-- server: required hostname or IP.
+- server: required hostname or IP (Primary).
+- servers: (New in v1.2.0) array of backup nodes (host:port) for automatic failover and jitter-based ranking.
 - port: server QUIC UDP port, 1..65535.
 
 ### 3.2 Engine and Transport
 - mode: performance, high_performance, stealth, balanced, adaptive.
 - obfs: none, random, http, tls, masque, webtransport, ghost.
 - pool_size: number of parallel QUIC sessions. Valid range in runtime is 1..16. Default 4.
+- persistence: (New in v1.2.0) (bool) enables disk-based state memory for intelligence metrics.
+- state_file: (New in v1.2.0) (string) path to store jitter, RTT baselines, and threat history.
 
 ### 3.3 Local Proxy and DNS
 - socks_port: local SOCKS5/HTTP proxy bind port. 0 disables local proxy. Default 1080.

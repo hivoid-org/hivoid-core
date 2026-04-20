@@ -49,6 +49,10 @@ type ClientConfig struct {
 	// SocketControl is an optional callback called after each socket is created.
 	// Essential for Android VpnService.protect().
 	SocketControl func(fd int)
+	// Persistence enables saving of engine metrics to disk.
+	Persistence bool
+	// StateFile is the path where engine metrics are stored.
+	StateFile string
 }
 
 // NewClient creates a new HiVoid client.
@@ -59,6 +63,9 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 	
 	engine := intelligence.NewEngine(cfg.Mode)
+	if cfg.Persistence && cfg.StateFile != "" {
+		engine.SetStatePath(cfg.StateFile)
+	}
 	engine.SetProbeTargets(cfg.ServerAddrs)
 	engine.Start()
 

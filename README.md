@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.1.0--stable-blue.svg" />
+  <img src="https://img.shields.io/badge/version-v1.2.0--stable-blue.svg" />
   <img src="https://img.shields.io/badge/license-MPL--2.0-green.svg" />
   <img src="https://img.shields.io/badge/platform-cross--platform-blue.svg" />
   <img src="https://img.shields.io/badge/go-1.24+-00ADD8?logo=go" />
@@ -20,16 +20,16 @@ Hi Void is a high-performance core for secure, scalable, and efficient proxy net
 - [Server Configuration Guide](SERVER_GUIDE.md) — Detailed reference for server setup.
 - [Client Configuration Guide](CLIENT_GUIDE.md) — Detailed reference for client setup.
 
-## Key Features (v1.1.0-stable)
-- **Production-Ready Obfuscation**: Full support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR) modes.
-- **Statistical Stealth (Ghost Mode)**: Advanced CBR engine with adaptive entropy and intelligent noise generation to defeat deep packet inspection.
+## Key Features (v1.2.0-stable)
+- **Adaptive Intelligence Engine**: Real-time network path monitoring using Welford's algorithm to track Jitter (RTT StdDev) and automate state transitions.
+- **Stateful Persistence**: Baselines and threat scores are persisted to disk (`state.json`), enabling optimal performance immediately after restart without a learning phase.
+- **Multi-Server High Availability**: Seamless failover and server ranking across multiple backends with integrated health-check probing.
+- **Advanced Obfuscation**: Production-ready support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR) with entropy-aware padding.
+- **Granular Routing Control**: Refined GeoData routing with dedicated fields for `GeoSite`, `GeoIP`, `Domains`, and `IPs`, plus `Direct DNS` resolver isolation.
 - **Active Defense (Anti-Probing)**: Silent drop or TCP-like tarpitting for unauthorized probes, with fallback redirection to standard web services.
 - **ISP Throttling Evasion**: Client-side `SessionPool` dynamically multiplexes traffic across independent QUIC tunnels to bypass single-flow speed caps.
-- **Native Smart Routing**: Built-in GeoData routing using standard `.dat` lists (`geoip` & `geosite`) for zero-latency domestic bypass.
-- **Granular Policy Enforcement**: Server-side Active Quota, Expiry checks, `MaxConnections`, and IP-based concurrency limits.
 - **Hybrid Cryptography**: Post-quantum ready handshakes using X25519 + ML-KEM key exchange.
-- **Hub Integrated**: Fully compatible with HiVoid Hub for centralized policy sync, mass configuration updates, and real-time telemetry.
-- **High-Performance Architecture**: Scalable, authenticated QUIC tunneling for multi-tenant deployments.
+- **Ecosystem Ready**: Fully synced with HiVoid Hub and Panel for centralized policy management and advanced telemetry visualization.
 
 ---
 
@@ -115,7 +115,7 @@ Edit `server.json` based on your deployment.
 {
   "server": {
     "listen": ":4433",
-    "mode": "PERFORMANCE",
+    "mode": "ADAPTIVE",
     "log_level": "info"
   },
   "security": {
@@ -125,43 +125,24 @@ Edit `server.json` based on your deployment.
   "features": {
     "hot_reload": true,
     "connection_tracking": true,
-    "disconnect_expired": true
+    "disconnect_expired": true,
+    "anti_probe": true
   },
   "users": [
     {
       "uuid": "11111111-1111-1111-1111-111111111111",
       "email": "user1@example.com",
       "enabled": true,
-      "max_connections": 10,
-      "max_ips": 3,
-      "bind_ip": "192.168.1.50",
-      "bandwidth_limit": 1024,
+      "mode": "adaptive",
+      "obfs": "masque",
+      "pool_size": 8,
+      "direct_route": "category-ads",
+      "blocked_hosts": "ads.example.com,tracker.io",
       "data_limit": 53687091200,
-      "expire_at": "2027-01-01T00:00:00Z",
-      "bytes_in": 0,
-      "bytes_out": 0,
-      "mode": "PERFORMANCE",
-      "obfs": "none"
-    },
-    {
-      "uuid": "22222222-2222-2222-2222-222222222222",
-      "email": "vip@example.com",
-      "enabled": true,
-      "max_connections": 0,
-      "max_ips": 0,
-      "bandwidth_limit": 0,
-      "expire_at": "",
-      "bytes_in": 0,
-      "bytes_out": 0,
-      "mode": "HIGH_PERFORMANCE",
-      "obfs": "ghost"
+      "expire_at": "2027-01-01T00:00:00Z"
     }
   ],
-  "max_conns": 0,
-  "anti_probe": true,
-  "fallback_addr": "1.1.1.1:443",
-  "allowed_hosts": [],
-  "blocked_hosts": []
+  "fallback_addr": "1.1.1.1:443"
 }
 ```
 
@@ -170,21 +151,28 @@ Edit `server.json` based on your deployment.
 ```json
 {
   "uuid": "YOUR-CLIENT-UUID",
-  "server": "YOUR_SERVER_IP_OR_DOMAIN",
+  "server": "node1.hivoid-network.com",
+  "servers": [
+    "node1.hivoid-network.com:4433",
+    "node2.hivoid-network.com:4433"
+  ],
   "port": 4433,
-  "mode": "balanced",
-  "obfs": "none",
-  "pool_size": 4,
+  "mode": "adaptive",
+  "obfs": "masque",
+  "pool_size": 8,
   "socks_port": 1080,
   "dns_port": 5353,
   "dns_upstream": "8.8.8.8:53",
-  "insecure": true,
-  "bypass_domains": [".ir", "localhost"],
-  "bypass_ips": ["10.0.0.0/8"],
+  "insecure": false,
+  "cert_pin": "6a992d5529f459a44fee58c7332c52707dd5002b9f718c87bbec021694abb522",
+  "persistence": true,
+  "state_file": "state.json",
+  "bypass_domains": ["localhost", "*.ir"],
+  "bypass_ips": ["127.0.0.1/32", "192.168.1.0/24"],
+  "direct_route": ["category-ads"],
+  "direct_dns_servers": ["127.0.0.1:53"],
   "geoip_path": "./geoip.dat",
   "geosite_path": "./geosite.dat",
-  "direct_route": ["ir", "category-ir"],
-  "cert_pin": "",
   "name": "My Hi Void"
 }
 ```

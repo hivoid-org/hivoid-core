@@ -99,6 +99,12 @@ type Config struct {
 	// to the server to bypass per-connection ISP throttling.
 	// Default: 4. Max: 16.
 	PoolSize int `json:"pool_size,omitempty"`
+
+	// Persistence enables saving of engine metrics (Jitter, RTT, Threat) to disk.
+	Persistence bool `json:"persistence,omitempty"`
+
+	// StateFile is the path where engine metrics are stored if Persistence is enabled.
+	StateFile string `json:"state_file,omitempty"`
 }
 
 // Default values applied when fields are absent in URI / JSON.

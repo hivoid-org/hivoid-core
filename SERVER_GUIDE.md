@@ -1,4 +1,4 @@
-# HiVoid Server Configuration Guide (vv1.0.0-stable)
+# HiVoid Server Configuration Guide (v1.2.0-stable)
 
 This guide documents the production-grade server commands, configuration schemas, hub integration protocols, and runtime contract details implemented in the HiVoid Core stable release.
 
@@ -96,6 +96,13 @@ HiVoid accepts both:
       "expire_at": "2026-12-31T23:59:59Z",
       "bytes_in": 0,
       "bytes_out": 0,
+      "persistence": true,
+      "state_file": "user_state.json",
+      "direct_geosite": "google,category-ads",
+      "direct_geoip": "private",
+      "direct_domains": "localhost,example.local",
+      "direct_ips": "10.0.0.0/8",
+      "direct_dns_servers": "127.0.0.1:53",
       "blocked_hosts": [],
       "blocked_tags": []
     }
@@ -154,6 +161,13 @@ Defaults applied when omitted:
 - data_limit: total traffic quota bytes, 0 = unlimited.
 - expire_at: RFC3339 expiry timestamp.
 - bytes_in/bytes_out: persistent counters seed values.
+- persistence: (bool) enables disk-based state memory (jitter/threat history) for the user's intelligence engine.
+- state_file: (string) specific path for the intelligence state JSON.
+- direct_geosite: explicit geosite tags for client-side bypass.
+- direct_geoip: explicit geoip tags for client-side bypass.
+- direct_domains: additional domain-based bypass rules.
+- direct_ips: additional IP/CIDR-based bypass rules.
+- direct_dns_servers: custom resolvers for bypassed traffic.
 - blocked_hosts/blocked_tags: per-user ACL/GeoData block rules.
 
 Validation notes:

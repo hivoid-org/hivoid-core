@@ -77,6 +77,8 @@ func runStart(args []string) {
 		Insecure:    cfg.Insecure,
 		Logger:      logger,
 		UUID:        uuidBytes,
+		Persistence: cfg.Persistence,
+		StateFile:   cfg.StateFile,
 	})
 	defer hvClient.Close()
 
