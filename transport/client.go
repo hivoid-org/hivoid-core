@@ -18,19 +18,21 @@ import (
 
 // Client is the HiVoid QUIC client.
 type Client struct {
-	serverAddr string
-	tlsCfg     *quic.Transport
-	mode       intelligence.Mode
-	insecure   bool
-	logger     *zap.Logger
-	manager    *session.Manager
-	control    func(fd int)
+	serverAddrs []string
+	engine      *intelligence.Engine
+	tlsCfg      *quic.Transport
+	mode        intelligence.Mode
+	insecure    bool
+	logger      *zap.Logger
+	manager     *session.Manager
+	control     func(fd int)
 }
 
 // ClientConfig holds client startup options.
 type ClientConfig struct {
-	// ServerAddr is "host:port" of the HiVoid server.
-	ServerAddr string
+	// ServerAddrs is a list of "host:port" for HiVoid servers.
+	// The client will automatically pick the best one based on probing.
+	ServerAddrs []string
 	// Mode is the default operating mode.
 	Mode intelligence.Mode
 	// ObfsName is the requested obfuscation type name.
@@ -55,6 +57,11 @@ func NewClient(cfg ClientConfig) *Client {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
+	
+	engine := intelligence.NewEngine(cfg.Mode)
+	engine.SetProbeTargets(cfg.ServerAddrs)
+	engine.Start()
+
 	mgr := session.NewManager(true, cfg.Mode, logger)
 	if cfg.ObfsName != "" {
 		mgr.SetObfuscation(cfg.ObfsConfig)
@@ -63,21 +70,23 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.UUID != ([16]byte{}) {
 		mgr.SetClientUUID(cfg.UUID)
 	}
+
 	return &Client{
-		serverAddr: cfg.ServerAddr,
-		mode:       cfg.Mode,
-		insecure:   cfg.Insecure,
-		logger:     logger,
-		manager:    mgr,
-		control:    cfg.SocketControl,
+		serverAddrs: cfg.ServerAddrs,
+		engine:      engine,
+		mode:        cfg.Mode,
+		insecure:    cfg.Insecure,
+		logger:      logger,
+		manager:     mgr,
+		control:     cfg.SocketControl,
 	}
 }
 
-// Connect establishes a QUIC connection to the server, performs the TLS
-// handshake, and then executes the HiVoid hybrid key exchange.
-// Returns the active Session ready for data transfer.
+// Connect establishes a QUIC connection to the best available server.
 func (c *Client) Connect(ctx context.Context) (*session.Session, error) {
-	addr, err := net.ResolveUDPAddr("udp", c.serverAddr)
+	serverAddr := c.pickBestServer()
+	
+	addr, err := net.ResolveUDPAddr("udp", serverAddr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve server addr: %w", err)
 	}
@@ -114,11 +123,11 @@ func (c *Client) Connect(ctx context.Context) (*session.Session, error) {
 	}
 
 	// Extract host for SNI
-	host, _, _ := net.SplitHostPort(c.serverAddr)
+	host, _, _ := net.SplitHostPort(serverAddr)
 	tlsCfg := ClientTLSConfig(host, c.insecure)
-
+ 
 	c.logger.Info("connecting",
-		zap.String("server", c.serverAddr),
+		zap.String("server", serverAddr),
 		zap.String("mode", c.mode.String()),
 	)
 
@@ -135,12 +144,48 @@ func (c *Client) Connect(ctx context.Context) (*session.Session, error) {
 	return c.manager.Dial(ctx, conn)
 }
 
+// pickBestServer selects the server with the best probe results.
+func (c *Client) pickBestServer() string {
+	results := c.engine.ProbeResults()
+	if len(results) == 0 {
+		if len(c.serverAddrs) > 0 {
+			return c.serverAddrs[0]
+		}
+		return ""
+	}
+
+	best := results[0].Target
+	minRTT := results[0].RTT
+	
+	found := false
+	for _, r := range results {
+		if r.Success {
+			if !found || r.RTT < minRTT {
+				minRTT = r.RTT
+				best = r.Target
+				found = true
+			}
+		}
+	}
+
+	if !found && len(c.serverAddrs) > 0 {
+		return c.serverAddrs[0]
+	}
+	return best
+}
+
 // Manager returns the session manager (for managing multiple connections).
 func (c *Client) Manager() *session.Manager {
 	return c.manager
 }
 
-// Close shuts down all client sessions.
+// Engine returns the intelligence engine.
+func (c *Client) Engine() *intelligence.Engine {
+	return c.engine
+}
+
+// Close shuts down all client sessions and the engine.
 func (c *Client) Close() {
+	c.engine.Stop()
 	c.manager.CloseAll()
 }

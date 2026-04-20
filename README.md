@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.0--stable-blue.svg" />
+  <img src="https://img.shields.io/badge/version-vv1.0.0--stable-blue.svg" />
   <img src="https://img.shields.io/badge/license-MPL--2.0-green.svg" />
   <img src="https://img.shields.io/badge/platform-cross--platform-blue.svg" />
   <img src="https://img.shields.io/badge/go-1.24+-00ADD8?logo=go" />
@@ -20,7 +20,7 @@ Hi Void is a high-performance core for secure, scalable, and efficient proxy net
 - [Server Configuration Guide](SERVER_GUIDE.md) — Detailed reference for server setup.
 - [Client Configuration Guide](CLIENT_GUIDE.md) — Detailed reference for client setup.
 
-## Key Features (v1.0.0-stable)
+## Key Features (vv1.0.0-stable)
 - **Production-Ready Obfuscation**: Full support for MASQUE (RFC 9298), WebTransport, and Dynamic Ghost (CBR) modes.
 - **Statistical Stealth (Ghost Mode)**: Advanced CBR engine with adaptive entropy and intelligent noise generation to defeat deep packet inspection.
 - **Active Defense (Anti-Probing)**: Silent drop or TCP-like tarpitting for unauthorized probes, with fallback redirection to standard web services.

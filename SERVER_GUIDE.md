@@ -1,4 +1,4 @@
-# HiVoid Server Configuration Guide (v1.0.0-stable)
+# HiVoid Server Configuration Guide (vv1.0.0-stable)
 
 This guide documents the production-grade server commands, configuration schemas, hub integration protocols, and runtime contract details implemented in the HiVoid Core stable release.
 

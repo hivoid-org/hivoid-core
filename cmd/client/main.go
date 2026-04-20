@@ -30,7 +30,7 @@ Flags are parsed per-subcommand. Run "hivoid-client <cmd> --help" for details.`
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Printf("HiVoid Client v%s (Protocol v%d)\n\n", utils.CoreVersion, config.Version)
+		fmt.Printf("HiVoid Client v%s (Protocol %d)\n\n", utils.CoreVersion, config.Version)
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(1)
 	}
@@ -40,7 +40,7 @@ func main() {
 
 	switch sub {
 	case "version":
-		fmt.Printf("HiVoid Client v%s (Protocol v%d)\n", utils.CoreVersion, config.Version)
+		fmt.Printf("HiVoid Client v%s (Protocol %d)\n", utils.CoreVersion, config.Version)
 	case "start":
 		runStart(args)
 	case "stop":

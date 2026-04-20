@@ -1,4 +1,4 @@
-# HiVoid Client Configuration Guide (v1.0.0-stable)
+# HiVoid Client Configuration Guide (vv1.0.0-stable)
 
 This document covers the high-performance client commands, configuration fields, URI behavior, and routing semantics implemented in the HiVoid Core stable release.
 

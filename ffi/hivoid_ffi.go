@@ -174,7 +174,7 @@ func TestConfigLatency(configStr *C.char) C.int {
 	uuidBytes, _ := cfg.UUIDBytes()
 
 	c := transport.NewClient(transport.ClientConfig{
-		ServerAddr: cfg.ServerAddr(),
+		ServerAddrs:   cfg.ServerAddrs(),
 		Mode:       intelligence.ModeFromString(cfg.Mode),
 		ObfsName:   cfg.Obfs,
 		ObfsConfig: session.ObfsConfigForName(cfg.Obfs),
@@ -302,7 +302,7 @@ func startCore(cfg *config.Config) *C.char {
 	}
 
 	hvClient = transport.NewClient(transport.ClientConfig{
-		ServerAddr:    cfg.ServerAddr(),
+		ServerAddrs:   cfg.ServerAddrs(),
 		Mode:          intelligence.ModeFromString(cfg.Mode),
 		ObfsName:      cfg.Obfs,
 		ObfsConfig:    session.ObfsConfigForName(cfg.Obfs),

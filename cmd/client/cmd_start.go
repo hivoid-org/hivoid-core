@@ -70,13 +70,13 @@ func runStart(args []string) {
 	}
 
 	hvClient := transport.NewClient(transport.ClientConfig{
-		ServerAddr: cfg.ServerAddr(),
-		Mode:       mode,
-		ObfsName:   cfg.Obfs,
-		ObfsConfig: session.ObfsConfigForName(cfg.Obfs),
-		Insecure:   cfg.Insecure,
-		Logger:     logger,
-		UUID:       uuidBytes,
+		ServerAddrs: cfg.ServerAddrs(),
+		Mode:        mode,
+		ObfsName:    cfg.Obfs,
+		ObfsConfig:  session.ObfsConfigForName(cfg.Obfs),
+		Insecure:    cfg.Insecure,
+		Logger:      logger,
+		UUID:        uuidBytes,
 	})
 	defer hvClient.Close()
 
@@ -87,7 +87,7 @@ func runStart(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), sigs...)
 	defer stop()
 
-	logger.Info("initializing session pool", zap.String("server", cfg.ServerAddr()), zap.Int("pool_size", cfg.PoolSize))
+	logger.Info("initializing session pool", zap.Strings("servers", cfg.ServerAddrs()), zap.Int("pool_size", cfg.PoolSize))
 	pool, err := client.NewSessionPool(ctx, cfg, hvClient, logger)
 	if err != nil {
 		logger.Fatal("failed to initialize session pool", zap.Error(err))

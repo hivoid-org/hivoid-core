@@ -64,7 +64,7 @@ func runPing(args []string) {
 
 	for i := 1; i <= *count; i++ {
 		hvClient := transport.NewClient(transport.ClientConfig{
-			ServerAddr: addr,
+			ServerAddrs: []string{addr},
 			Mode:       mode,
 			ObfsName:   cfg.Obfs,
 			ObfsConfig: session.ObfsConfigForName(cfg.Obfs),

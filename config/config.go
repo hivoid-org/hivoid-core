@@ -23,10 +23,13 @@ type Config struct {
 	// Required.
 	UUID string `json:"uuid"`
 
-	// Server is the hostname or IP address of the HiVoid server. Required.
+	// Servers is a list of host:port strings. If provided, Server and Port are ignored.
+	Servers []string `json:"servers,omitempty"`
+
+	// Server is the hostname or IP address of the HiVoid server. Required if Servers is empty.
 	Server string `json:"server"`
 
-	// Port is the UDP port (QUIC) of the HiVoid server. Required. 1–65535.
+	// Port is the UDP port (QUIC) of the HiVoid server. Required if Servers is empty. 1–65535.
 	Port int `json:"port"`
 
 	// Mode controls the intelligence engine's operating mode.
@@ -133,9 +136,24 @@ func (c *Config) withDefaults() {
 	}
 }
 
-// ServerAddr returns "host:port" suitable for dialing.
+// ServerAddrs returns all configured "host:port" addresses.
+func (c *Config) ServerAddrs() []string {
+	if len(c.Servers) > 0 {
+		return c.Servers
+	}
+	if c.Server != "" && c.Port != 0 {
+		return []string{formatHostPort(c.Server, c.Port)}
+	}
+	return nil
+}
+
+// ServerAddr returns the primary "host:port" address (for logging/legacy).
 func (c *Config) ServerAddr() string {
-	return formatHostPort(c.Server, c.Port)
+	addrs := c.ServerAddrs()
+	if len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
 }
 
 // EffectiveBypassDomains returns merged direct-domain rules.

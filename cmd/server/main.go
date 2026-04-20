@@ -38,7 +38,7 @@ func main() {
 
 	switch sub {
 	case "version":
-		fmt.Printf("HiVoid Server %s (Protocol v%d)\n", utils.CoreVersion, config.Version)
+		fmt.Printf("HiVoid Server %s (Protocol %d)\n", utils.CoreVersion, config.Version)
 	case "start":
 		runStart(args)
 	case "stop":
